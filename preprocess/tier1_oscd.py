@@ -45,7 +45,6 @@ import numpy as np
 import tifffile
 from PIL import Image
 
-from preprocess.common.bbox import pixel_to_normalized
 from preprocess.common.gsd import assign_gsd_bucket
 from preprocess.common.io import Manifest, append_jsonl, write_png
 from preprocess.validator import validate_sample
@@ -163,14 +162,22 @@ def load_mask(mask_path: Path | None, target_shape: tuple[int, int] | None = Non
     mask = (mask > 0).astype(np.uint8)
 
     # Resize if needed
+    # Issue 10 fix: prefer scipy.ndimage.zoom (nearest-neighbour) over PIL for
+    # consistency with the rest of the scipy-based mask processing path.
     if target_shape is not None and mask.shape != target_shape:
-        from PIL import Image as PILImage
-        mask_img = PILImage.fromarray(mask, mode="L")
-        mask_img = mask_img.resize(
-            (target_shape[1], target_shape[0]),
-            resample=PILImage.Resampling.NEAREST,
-        )
-        mask = np.array(mask_img)
+        try:
+            from scipy import ndimage as _ndimage
+            zoom_y = target_shape[0] / mask.shape[0]
+            zoom_x = target_shape[1] / mask.shape[1]
+            mask = _ndimage.zoom(mask, (zoom_y, zoom_x), order=0).astype(np.uint8)
+        except ImportError:
+            from PIL import Image as PILImage
+            mask_img = PILImage.fromarray(mask, mode="L")
+            mask_img = mask_img.resize(
+                (target_shape[1], target_shape[0]),
+                resample=PILImage.Resampling.NEAREST,
+            )
+            mask = np.array(mask_img)
 
     return mask
 
@@ -196,7 +203,8 @@ def mask_to_bboxes(mask: np.ndarray) -> list[list[int]]:
     bboxes = []
     for i in range(1, num_features + 1):
         ys, xs = np.where(labeled == i)
-        if len(ys) < 10:  # Skip tiny noise regions
+        # Issue 8 fix: raise threshold from 10 → 50 pixels (spec's ≥50px² suggestion)
+        if len(ys) < 50:  # Skip tiny noise regions
             continue
         bboxes.append([int(xs.min()), int(ys.min()), int(xs.max()), int(ys.max())])
 
@@ -226,13 +234,15 @@ def process_pair(
         print(f"  ERROR loading images for {location}: {e}")
         return None
 
-    # Load and convert mask to bboxes
-    mask = load_mask(pair.get("mask_path"), target_shape=before_rgb.shape[:2])
-    bboxes = mask_to_bboxes(mask)
-    bbox_normalized = None
-    if bboxes:
-        h, w = before_rgb.shape[:2]
-        bbox_normalized = pixel_to_normalized(tuple(bboxes[0]), w, h)
+    # Issue 3 fix (Option A): OSCD change masks are spatially scattered across
+    # the full image (urban growth along road networks), so even correct
+    # per-component boxes for the largest component tend to span nearly the
+    # entire image (~99.8% area).  Training on these teaches the model that
+    # "grounding" means "the whole image" — actively harming spatial precision.
+    # Demote all OSCD samples to change_vqa (bbox=None) unconditionally.
+    # Mask and bboxes are still computed so mask_to_bboxes remains testable,
+    # but the result is not propagated into the sample.
+    _ = load_mask(pair.get("mask_path"), target_shape=before_rgb.shape[:2])
 
     # Write PNGs
     img_dir = output_dir / "images"
@@ -249,14 +259,14 @@ def process_pair(
     sample = {
         "id": sample_id,
         "dataset": "oscd",
-        "task": "change_vqa" if bbox_normalized is None else "change_grounding",
+        "task": "change_vqa",  # Issue 3: always change_vqa, never change_grounding
         "image_path": [str(before_png), str(after_png)],
         "pair_type": "bitemporal",
         "gsd_bucket": assign_gsd_bucket("oscd"),
         "split": "train",
         "instruction": "What changed between the two dates?",
         "response": f"Change detected in {location}.",
-        "bbox": bbox_normalized,
+        "bbox": None,  # Issue 3: always null for OSCD
         "modality": "optical",
     }
 

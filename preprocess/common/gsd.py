@@ -44,6 +44,8 @@ Public API:
 from __future__ import annotations
 
 import copy
+import sys
+from pathlib import Path
 from typing import Any
 
 
@@ -144,8 +146,12 @@ def create_proxy_sample(
     The proxy sample has:
         - gsd_bucket set to CARTOSAT-proxy or RISAT-proxy
         - A synthetic id suffix "_proxy"
-        - Original image paths preserved (the tier script handles actual
-          GSD transformation of the images; this just sets metadata)
+        - Original image paths preserved by default
+
+    For actual pixel-level GSD transformation (Issue 5), callers should use
+    ``generate_proxy_image()`` from this module to bicubic-downsample the source
+    image and then update ``proxy["image_path"]`` to point at the new file.
+    Without that step the GSD token carries no visual information.
 
     Parameters
     ----------
@@ -173,6 +179,66 @@ def create_proxy_sample(
     proxy["id"] = f"{proxy['id']}_proxy"
 
     return proxy
+
+
+# ---------------------------------------------------------------------------
+# R4 — Proxy image generation (Issue 5 fix: generalised from tier1_vrsbench)
+# ---------------------------------------------------------------------------
+
+def generate_proxy_image(
+    src_path: "Path | str",
+    proxy_dir: "Path | str",
+    image_name: str,
+    scale_factor: int = 4,
+) -> str | None:
+    """Generate a bicubic-downsampled proxy image for R4 dual-resolution branching.
+
+    Issue 5 fix: previously only VRSBench called ``generate_proxy_image()``;
+    rsvqa_hr, levir_cd, and sn6_opt reused identical pixels with a different
+    GSD tag, making the tag meaningless.  This generalised version lives in
+    ``common/gsd.py`` so every DUAL_RESOLUTION_DATASETS tier script can call it.
+
+    Issue 7 fix: scale is dynamic (``w // scale_factor``, ``h // scale_factor``)
+    rather than a hardcoded (128, 128) target, so any source image size receives
+    the intended GSD reduction.
+
+    Issue 9 fix: writes with ``compress_level=6`` to avoid Kaggle storage bloat.
+
+    Parameters
+    ----------
+    src_path : source image file (any PIL-readable format).
+    proxy_dir : directory into which the proxy PNG is written.
+    image_name : filename for the proxy (usually the source basename).
+    scale_factor : integer divisor applied to both width and height (default 4).
+                   Resulting size is clamped to a minimum of 32px per side.
+
+    Returns
+    -------
+    Absolute path string to the written proxy PNG, or None on failure.
+    """
+    from PIL import Image  # lazy import — PIL not needed at module load time
+
+    src_path = Path(src_path)
+    proxy_dir = Path(proxy_dir)
+    proxy_path = proxy_dir / image_name
+
+    if proxy_path.exists():
+        return str(proxy_path)
+
+    try:
+        img = Image.open(str(src_path))
+        if img.mode != "RGB":
+            img = img.convert("RGB")
+        w, h = img.size
+        proxy_w = max(32, w // scale_factor)
+        proxy_h = max(32, h // scale_factor)
+        proxy = img.resize((proxy_w, proxy_h), Image.BICUBIC)
+        proxy_path.parent.mkdir(parents=True, exist_ok=True)
+        proxy.save(str(proxy_path), format="PNG", compress_level=6)
+        return str(proxy_path)
+    except Exception as e:
+        print(f"  [WARN] generate_proxy_image failed for {image_name}: {e}", file=sys.stderr)
+        return None
 
 
 # ---------------------------------------------------------------------------

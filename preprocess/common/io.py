@@ -107,7 +107,7 @@ def write_png(arr: np.ndarray, path: str | Path) -> None:
         f"Expected (H, W, 3), got {arr.shape}"
 
     img = Image.fromarray(arr.astype(np.uint8), mode="RGB")
-    img.save(str(path), format="PNG", compress_level=0)  # lossless, no compression
+    img.save(str(path), format="PNG", compress_level=6)  # lossless, balanced compression
 
 
 # ---------------------------------------------------------------------------

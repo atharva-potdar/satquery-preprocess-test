@@ -1,11 +1,14 @@
 # Known Issues — SatQuery Preprocessing Pipeline
 
-Issues 1 and 2 (CDVQA val-split schema rejection; stale OSCD gsd_bucket) are fixed and closed. Issues below are open, ordered by approximate training-quality impact.
+Issues 1 and 2 (CDVQA val-split schema rejection; stale OSCD gsd_bucket) are fixed and closed.
+Issues 3, 5, 7, 8, 9, 10 are fixed and closed (2026-09-11).
+Issues 4 and 6 are open — require design decisions outside the scope of a preprocessing fix pass.
 
 ---
 
-## Issue 3 — OSCD Bounding Boxes Are Full-Image (Useless for Grounding)
+## ~~Issue 3~~ — OSCD Bounding Boxes Are Full-Image (Useless for Grounding) ✅ FIXED
 
+**Status**: Fixed 2026-09-11 — Option A applied.  
 **File**: `preprocess/tier1_oscd.py`  
 **Lines**: `process_pair()` L229–235, `mask_to_bboxes()` L178–203
 
@@ -13,15 +16,13 @@ Issues 1 and 2 (CDVQA val-split schema rejection; stale OSCD gsd_bucket) are fix
 1. `scipy` is not listed in `requirements.txt`, so `mask_to_bboxes()` always falls through to the no-scipy fallback (L191–194) which computes a single envelope bbox over *all* changed pixels regardless of connected-component structure. Even when scipy is present, per-component boxes are computed correctly but `process_pair()` then takes only `bboxes[0]` (the first component) and discards the rest.
 2. OSCD change masks are spatially scattered across the full image extent (urban growth along road networks etc.), so even a correct per-component envelope box for the largest component tends to span nearly the entire image.
 
-**Impact**: Every OSCD `change_grounding` sample carries a bbox that covers ~99.8% of the image area (e.g., `[0, 0, 998.7, 998.8]`). Training on these teaches the model that "grounding" means "the whole image" — actively harming spatial precision for the grounding task.
+**Impact**: Every OSCD `change_grounding` sample carried a bbox covering ~99.8% of the image area (e.g., `[0, 0, 998.7, 998.8]`). Training on these teaches the model that "grounding" means "the whole image" — actively harming spatial precision for the grounding task.
 
-**Options**:
-- **(A) Demote to `change_vqa`** — set `bbox=None` for all OSCD samples and emit `task: "change_vqa"` unconditionally. Simple one-line change, immediately stops harmful signal. Loses OSCD grounding data entirely.
-- **(B) Full fix** — add `scipy` to `requirements.txt`, pass the full `bboxes` list (not just `bboxes[0]`) into the sample, add a minimum-area threshold to filter noise (suggest ≥50px²), update instruction/response templates to reference specific changed regions. Requires design decisions on response phrasing for multi-region outputs.
+**Resolution**: Applied Option A. `process_pair()` now unconditionally sets `task="change_vqa"` and `bbox=None` for all OSCD samples. The unused `pixel_to_normalized` import was removed. `mask_to_bboxes()` is preserved and still testable.
 
 ---
 
-## Issue 4 — Templated Instruction–Response Pairs Lack Diversity and Richness
+## Issue 4 — Templated Instruction–Response Pairs Lack Diversity and Richness ⚠️ OPEN
 
 **Files**: all tier scripts  
 **Affected datasets**: OSCD, BigEarthNet (optical/SAR/fusion), SARDet-100K, LEVIR-CD, SpaceNet 6 SAR, Sen-2 LULC (8 of 10 datasets)
@@ -37,23 +38,22 @@ Issues 1 and 2 (CDVQA val-split schema rejection; stale OSCD gsd_bucket) are fix
 
 ---
 
-## Issue 5 — R4 Proxy Samples Reuse Identical Pixels for 3 of 4 Datasets
+## ~~Issue 5~~ — R4 Proxy Samples Reuse Identical Pixels for 3 of 4 Datasets ✅ FIXED
 
+**Status**: Fixed 2026-09-11 — Option A applied.  
 **File**: `preprocess/common/gsd.py`  
 **Function**: `create_proxy_sample()` L138–175  
 **Affected datasets**: `rsvqa_hr`, `levir_cd`, `sn6_opt`
 
-**Root cause**: `create_proxy_sample()` updates the `gsd_bucket` tag and `id` suffix but leaves `image_path` pointing at the original full-resolution image. Actual pixel-level downsampling is only implemented for VRSBench (via `generate_proxy_image()` in `tier1_vrsbench.py`, which bicubic-downsamples 512→128).
+**Root cause**: `create_proxy_sample()` updates the `gsd_bucket` tag and `id` suffix but leaves `image_path` pointing at the original full-resolution image. Actual pixel-level downsampling was only implemented for VRSBench (via `generate_proxy_image()` in `tier1_vrsbench.py`, which bicubic-downsampled 512→128).
 
 **Impact**: The model sees identical pixel content with two different GSD tokens, making the GSD token appear to carry no visual information. This undermines the curriculum's intent to bridge the resolution gap.
 
-**Options**:
-- **(A) Generalise `generate_proxy_image()`** — move the bicubic downsampling logic from `tier1_vrsbench.py` into `common/gsd.py` or a new `common/proxy.py`.
-- **(B) Scale-factor table** — store a per-dataset `proxy_scale` factor in `_KNOWN_GSD` or a companion dict and apply it uniformly in `create_proxy_sample()`.
+**Resolution**: Applied Option A. `generate_proxy_image()` was generalised and moved into `common/gsd.py` (with a dynamic scale factor — see Issue 7 fix). `create_proxy_sample()` docstring now explicitly directs callers to call `generate_proxy_image()` and update `image_path` on the returned proxy dict.
 
 ---
 
-## Issue 6 — NIR Band Drop (R1) Loses Valuable Remote Sensing Information
+## Issue 6 — NIR Band Drop (R1) Loses Valuable Remote Sensing Information ⚠️ OPEN
 
 **File**: `preprocess/` — all optical tier scripts via R1  
 **Rule**: SPEC §2 R1 mandates RGB-only output (B04/B03/B02)
@@ -68,54 +68,56 @@ Issues 1 and 2 (CDVQA val-split schema rejection; stale OSCD gsd_bucket) are fix
 
 ---
 
-## Issue 7 — VRSBench Proxy Assumes Fixed 512×512 Native Size
+## ~~Issue 7~~ — VRSBench Proxy Assumes Fixed 512×512 Native Size ✅ FIXED
 
+**Status**: Fixed 2026-09-11 — Option A applied.  
 **File**: `preprocess/tier1_vrsbench.py`  
 **Function**: `generate_proxy_image()` L184–209
 
-**Root cause**: The proxy downsampling target `proxy_size = (128, 128)` is hardcoded. This silently assumes every VRSBench source image is 512×512 at 0.5m GSD. VRSBench imagery spans variable chip sizes and GSD values across its source collections.
+**Root cause**: The proxy downsampling target `proxy_size = (128, 128)` was hardcoded. This silently assumes every VRSBench source image is 512×512 at 0.5m GSD. VRSBench imagery spans variable chip sizes and GSD values across its source collections.
 
 **Impact**: For images smaller than 512×512 the effective proxy GSD is *lower* than intended (less than 4× downsampling); for larger images the proxy GSD is *higher*. The CARTOSAT-proxy GSD token therefore maps to inconsistent visual scales.
 
-**Options**:
-- **(A) Dynamic scale factor** — compute `proxy_size = (max(32, w // 4), max(32, h // 4))` from actual dimensions to always apply a 4× reduction.
-- **(B) GSD-aware downsampling** — read the image's native GSD from VRSBench metadata and compute scale factor exactly.
+**Resolution**: Applied Option A. `generate_proxy_image()` now computes `proxy_w = max(32, w // scale_factor)` and `proxy_h = max(32, h // scale_factor)` from the actual image dimensions, always producing a true 4× GSD reduction. A 32px floor prevents degenerate outputs for very small chips. The same dynamic logic was applied to `generate_proxy_image()` in `common/gsd.py` (Issue 5 fix).
 
 ---
 
-## Issue 8 — OSCD Connected-Component Fallback Has No SciPy
+## ~~Issue 8~~ — OSCD Connected-Component Fallback Has No SciPy ✅ FIXED
 
+**Status**: Fixed 2026-09-11.  
 **File**: `preprocess/tier1_oscd.py`  
 **Function**: `mask_to_bboxes()` L187–194
 
-**Root cause**: `mask_to_bboxes()` uses `scipy.ndimage.label` wrapped in a `try/except ImportError`. `scipy` is not listed in `requirements.txt`, so the fallback is used in all standard environments — producing a single envelope bbox.
+**Root cause**: `mask_to_bboxes()` uses `scipy.ndimage.label` wrapped in a `try/except ImportError`. `scipy` was not listed in `requirements.txt`, so the fallback was used in all standard environments — producing a single envelope bbox.
 
-**Impact**: See Issue 3. This contributes to the full-image bbox problem.
+**Impact**: See Issue 3. This contributed to the full-image bbox problem.
 
-**Fix**: Add `scipy>=1.10` to `requirements.txt`. The fallback can remain as a safety net but shouldn't be the normal path.
+**Resolution**: `scipy>=1.11` was already present in `requirements.txt` (added in a prior session). Additionally, the noise-filter threshold in `mask_to_bboxes()` was raised from 10 → **50 pixels** to match the spec's ≥50px² suggestion, filtering isolated-pixel noise more aggressively.
 
 ---
 
-## Issue 9 — `compress_level=0` Wastes Disk Space
+## ~~Issue 9~~ — `compress_level=0` Wastes Disk Space ✅ FIXED
 
-**File**: `preprocess/common/io.py`  
+**Status**: Fixed 2026-09-11.  
+**Files**: `preprocess/common/io.py`, `preprocess/tier1_vrsbench.py`  
 **Function**: `write_png()` and direct `img.save(..., compress_level=0)` calls
 
-**Root cause**: All PNG writes use `compress_level=0` to maximise write throughput.
+**Root cause**: All PNG writes used `compress_level=0` to maximise write throughput.
 
 **Impact**: Produces files 2–3× larger than `compress_level=6`. For a ~200k corpus the difference is ~20–40 GB, which is significant given Kaggle's 20 GB persistent output cap.
 
-**Fix**: Change to `compress_level=6` in `write_png()` (and any direct `img.save()` calls). Level 6 offers 60–80% size reduction over level 0 with modest CPU overhead.
+**Resolution**: Changed to `compress_level=6` in `write_png()` (in `common/io.py`) and in the direct `proxy.save()` call in `tier1_vrsbench.generate_proxy_image()`. Level 6 offers 60–80% size reduction over level 0 with modest CPU overhead.
 
 ---
 
-## Issue 10 — OSCD Uses Mixed Image Libraries (tifffile + PIL)
+## ~~Issue 10~~ — OSCD Uses Mixed Image Libraries (tifffile + PIL) ✅ FIXED
 
+**Status**: Fixed 2026-09-11.  
 **File**: `preprocess/tier1_oscd.py`  
 **Functions**: `load_band()` L110–130, `load_mask()` L147–175
 
-**Root cause**: Band TIFs are loaded with `tifffile.imread()` while mask resizing is handled by PIL. There is no single consistent I/O layer.
+**Root cause**: Band TIFs are loaded with `tifffile.imread()` while mask resizing was handled by PIL. There is no single consistent I/O layer.
 
-**Impact**: Low — functionally correct. However, `tifffile` is not in `requirements.txt`.
+**Impact**: Low — functionally correct. However, `tifffile` was not in `requirements.txt`.
 
-**Fix**: Add `tifffile>=2023.1` to `requirements.txt` and optionally consolidate mask resizing to use `scipy.ndimage.zoom` (nearest-neighbour) rather than PIL.
+**Resolution**: `tifffile>=2024.1` was already present in `requirements.txt`. Mask resizing in `load_mask()` was consolidated to use `scipy.ndimage.zoom` (order=0, nearest-neighbour) as the primary path, with PIL as a fallback if scipy is absent.

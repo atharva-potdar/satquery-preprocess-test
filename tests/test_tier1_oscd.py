@@ -146,10 +146,21 @@ class TestMaskToBboxes:
         mask_path = oscd_dir / "labels" / "location_a" / "cm" / "location_a-cm.tif"
         mask = load_mask(mask_path)
         bboxes = mask_to_bboxes(mask)
+        # The dummy mask has a 32×32=1024 px change region — well above 50px threshold
         assert len(bboxes) >= 1
         x1, y1, x2, y2 = bboxes[0]
         assert x1 < x2
         assert y1 < y2
+
+    def test_small_component_filtered_by_threshold(self):
+        """Issue 8: components smaller than 50px are filtered out."""
+        mask = np.zeros((64, 64), dtype=np.uint8)
+        # Scatter 9 isolated change pixels (each is a 1-pixel component)
+        for i in range(9):
+            mask[i * 6, i * 6] = 1  # 9 single-pixel components
+        bboxes = mask_to_bboxes(mask)
+        # All components are 1px each — all should be filtered (< 50px threshold)
+        assert bboxes == [], f"Expected no bboxes for sub-threshold components, got {bboxes}"
 
     def test_empty_mask_returns_empty(self):
         mask = np.zeros((64, 64), dtype=np.uint8)
@@ -181,10 +192,16 @@ class TestProcessPair:
         assert sample["pair_type"] == "bitemporal"
         assert sample["modality"] == "optical"
         assert len(sample["image_path"]) == 2
-        assert sample["bbox"] is not None
+        # Issue 3 fix: OSCD is always demoted to change_vqa with bbox=None
+        assert sample["task"] == "change_vqa", (
+            f"Expected change_vqa (Issue 3 fix), got {sample['task']}"
+        )
+        assert sample["bbox"] is None, (
+            f"Expected null bbox for all OSCD samples (Issue 3 fix), got {sample['bbox']}"
+        )
 
     def test_empty_mask_produces_null_bbox_change_vqa(self, oscd_dir):
-        """Empty mask → bbox=null, task=change_vqa."""
+        """Empty mask (or any mask) → bbox=null, task=change_vqa (Issue 3 fix)."""
         # Create a location with empty mask
         _create_dummy_bands(oscd_dir / "images" / "location_empty" / "imgs_1")
         _create_dummy_bands(oscd_dir / "images" / "location_empty" / "imgs_2")

@@ -497,3 +497,65 @@ class TestSaveConcat:
             assert out_path.exists()
             result = Image.open(str(out_path))
             assert result.size == (64 + 2 + 64, 64)
+
+
+# =========================================================================
+# io.py tests (Issue 9 — write_png compression level)
+# =========================================================================
+
+
+class TestWritePng:
+    """Verify write_png() uses compress_level=6 (Issue 9 fix)."""
+
+    def test_compress_level_6_smaller_than_level_0(self, tmp_path):
+        """A highly compressible solid-colour image must be smaller at level 6 than level 0."""
+        from preprocess.common.io import write_png
+
+        # Solid colour array — maximally compressible
+        arr = np.full((256, 256, 3), 128, dtype=np.uint8)
+
+        out_path = tmp_path / "test.png"
+        write_png(arr, out_path)
+        size_6 = out_path.stat().st_size
+
+        # Write same content at level 0 for reference
+        ref_path = tmp_path / "ref_level0.png"
+        img = Image.fromarray(arr, mode="RGB")
+        img.save(str(ref_path), format="PNG", compress_level=0)
+        size_0 = ref_path.stat().st_size
+
+        assert size_6 <= size_0, (
+            f"write_png (level 6, {size_6} B) should be <= level 0 ({size_0} B). "
+            "Is compress_level still set to 0 in io.py?"
+        )
+
+    def test_write_png_produces_valid_image(self, tmp_path):
+        """write_png() output must be a valid, readable RGB PNG."""
+        from preprocess.common.io import write_png
+
+        arr = np.random.randint(0, 255, (64, 64, 3), dtype=np.uint8)
+        out_path = tmp_path / "valid.png"
+        write_png(arr, out_path)
+
+        assert out_path.exists()
+        img = Image.open(str(out_path))
+        assert img.mode == "RGB"
+        assert img.size == (64, 64)
+        np.testing.assert_array_equal(np.array(img), arr)
+
+    def test_write_png_grayscale_expanded_to_rgb(self, tmp_path):
+        """2D grayscale arrays must be replicated to 3-channel RGB."""
+        from preprocess.common.io import write_png
+
+        arr = np.random.randint(0, 255, (32, 32), dtype=np.uint8)
+        out_path = tmp_path / "gray.png"
+        write_png(arr, out_path)
+
+        img = Image.open(str(out_path))
+        assert img.mode == "RGB"
+        loaded = np.array(img)
+        # All 3 channels must be identical to the source grayscale
+        np.testing.assert_array_equal(loaded[:, :, 0], arr)
+        np.testing.assert_array_equal(loaded[:, :, 1], arr)
+        np.testing.assert_array_equal(loaded[:, :, 2], arr)
+

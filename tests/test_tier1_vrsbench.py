@@ -362,3 +362,96 @@ class TestTaskBboxConsistency:
                 samples = process_entry(entry, None)
                 for s in samples:
                     assert s["bbox"] is None, f"{s['task']} sample {s['id']} has non-null bbox"
+
+
+# ---------------------------------------------------------------------------
+# Issue 7: dynamic proxy scale factor
+# Issue 9: proxy PNG compression
+# ---------------------------------------------------------------------------
+
+
+class TestGenerateProxyImage:
+    """Tests for the generate_proxy_image() function (Issues 7 + 9)."""
+
+    def test_dynamic_scale_factor_non_square(self, tmp_path):
+        """Issue 7: a 256×128 source image should yield a 64×32 proxy (4× reduction)."""
+        import numpy as np
+        from PIL import Image
+        from preprocess.tier1_vrsbench import generate_proxy_image
+
+        src = tmp_path / "src.png"
+        img = Image.fromarray(np.zeros((128, 256, 3), dtype=np.uint8))  # H=128, W=256
+        img.save(str(src))
+
+        proxy_dir = tmp_path / "proxy"
+        result = generate_proxy_image(src, proxy_dir, "src.png", scale_factor=4)
+        assert result is not None
+        proxy = Image.open(result)
+        w, h = proxy.size  # PIL: (width, height)
+        assert w == 64, f"Expected proxy width 64, got {w}"
+        assert h == 32, f"Expected proxy height 32, got {h}"
+
+    def test_small_image_clamped_to_min_32(self, tmp_path):
+        """Issue 7: a 16×16 image divided by 4 = 4, must be clamped to 32."""
+        import numpy as np
+        from PIL import Image
+        from preprocess.tier1_vrsbench import generate_proxy_image
+
+        src = tmp_path / "tiny.png"
+        img = Image.fromarray(np.zeros((16, 16, 3), dtype=np.uint8))
+        img.save(str(src))
+
+        proxy_dir = tmp_path / "proxy"
+        result = generate_proxy_image(src, proxy_dir, "tiny.png", scale_factor=4)
+        assert result is not None
+        proxy = Image.open(result)
+        w, h = proxy.size
+        assert w >= 32, f"Expected width >= 32 (clamped), got {w}"
+        assert h >= 32, f"Expected height >= 32 (clamped), got {h}"
+
+    def test_proxy_smaller_than_compress_level_0(self, tmp_path):
+        """Issue 9: compress_level=6 proxy file must be smaller than level=0 equivalent."""
+        import numpy as np
+        from PIL import Image
+        from preprocess.tier1_vrsbench import generate_proxy_image
+
+        # Use a solid-color image — highly compressible
+        src = tmp_path / "big.png"
+        arr = np.full((512, 512, 3), 128, dtype=np.uint8)
+        img = Image.fromarray(arr)
+        img.save(str(src))
+
+        proxy_dir_6 = tmp_path / "proxy_6"
+        result = generate_proxy_image(src, proxy_dir_6, "big.png")
+        assert result is not None
+        size_6 = Path(result).stat().st_size
+
+        # Write same content at level 0 for comparison
+        proxy_l0 = tmp_path / "proxy_l0.png"
+        proxy_img = Image.open(result)
+        proxy_img.save(str(proxy_l0), format="PNG", compress_level=0)
+        size_0 = proxy_l0.stat().st_size
+
+        assert size_6 <= size_0, (
+            f"compress_level=6 ({size_6} B) should be <= level=0 ({size_0} B)"
+        )
+
+    def test_idempotent_existing_proxy_not_overwritten(self, tmp_path):
+        """generate_proxy_image() returns existing path without regenerating."""
+        import numpy as np
+        from PIL import Image
+        from preprocess.tier1_vrsbench import generate_proxy_image
+
+        src = tmp_path / "src.png"
+        Image.fromarray(np.zeros((64, 64, 3), dtype=np.uint8)).save(str(src))
+
+        proxy_dir = tmp_path / "proxy"
+        result1 = generate_proxy_image(src, proxy_dir, "src.png")
+        mtime1 = Path(result1).stat().st_mtime
+
+        result2 = generate_proxy_image(src, proxy_dir, "src.png")
+        mtime2 = Path(result2).stat().st_mtime
+
+        assert result1 == result2
+        assert mtime1 == mtime2, "Proxy was regenerated when it should have been reused"
+

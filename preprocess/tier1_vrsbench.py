@@ -185,8 +185,21 @@ def generate_proxy_image(
     src_path: Path,
     proxy_dir: Path,
     image_name: str,
+    scale_factor: int = 4,
 ) -> str | None:
     """Generate a CARTOSAT-proxy (~2m) downsampled image via bicubic resize.
+
+    Issue 7 fix: uses dynamic scale factor based on actual image dimensions
+    rather than a hardcoded (128, 128) target, so any source size gets the
+    intended 4× GSD reduction.
+
+    Parameters
+    ----------
+    src_path : source image path.
+    proxy_dir : directory to write the proxy PNG into.
+    image_name : filename for the proxy (preserved from source).
+    scale_factor : integer divisor applied to both width and height (default 4).
+                   Resulting size is clamped to a minimum of 32px per side.
 
     Returns the proxy image path, or None on failure.
     """
@@ -198,11 +211,14 @@ def generate_proxy_image(
         img = Image.open(str(src_path))
         if img.mode != "RGB":
             img = img.convert("RGB")
-        # 512×512 → downsample to ~128×128 (4x reduction ≈ 2m from 0.5m native)
-        proxy_size = (128, 128)
-        proxy = img.resize(proxy_size, Image.BICUBIC)
+        w, h = img.size
+        # Dynamic 4× reduction — fixes Issue 7 (hardcoded 512→128 assumption)
+        proxy_w = max(32, w // scale_factor)
+        proxy_h = max(32, h // scale_factor)
+        proxy = img.resize((proxy_w, proxy_h), Image.BICUBIC)
         proxy_path.parent.mkdir(parents=True, exist_ok=True)
-        proxy.save(str(proxy_path), format="PNG", compress_level=0)
+        # Issue 9 fix: compress_level=6 (was 0)
+        proxy.save(str(proxy_path), format="PNG", compress_level=6)
         return str(proxy_path)
     except Exception as e:
         print(f"  [WARN] Failed to generate proxy for {image_name}: {e}", file=sys.stderr)

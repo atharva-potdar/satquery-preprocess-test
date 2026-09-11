@@ -168,7 +168,10 @@ def run_tier1_cdvqa(
             continue
 
         sample["gsd_bucket"] = native_bucket
-        sample["split"] = entry.get("_split", "train")
+        # All CDVQA samples enter as "train"; the val_internal carve-out
+        # is handled downstream by split_internal_val.py.  The raw "_split"
+        # value "val" is not in the schema enum ["train", "val_internal"].
+        sample["split"] = "train"
 
         ok, errs = validate_sample(sample)
         if not ok:

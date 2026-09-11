@@ -117,6 +117,23 @@ def sar_pseudo_rgb(
     return np.stack([r, g, b], axis=-1)
 
 
+def sar_intensity_pseudo_gray(intensity: np.ndarray) -> np.ndarray:
+    """Render a single-channel SAR intensity image as an honest grayscale-in-dB PNG.
+
+    Some sources (SARDet-100K's shipped PNGs, single-band fallback tiles)
+    give us amplitude/intensity only — no separate VV/VH. R3's dual-pol
+    mapping needs two channels; fabricating a second one (e.g. VH = VV*0.8)
+    invents a physically meaningless, constant ratio real backscatter
+    never has. Converting the one real channel to dB and replicating it
+    across R/G/B is the honest "pseudo-RGB" for single-pol data — visually
+    a grayscale SAR render, same R3 dB pipeline, no invented signal.
+    """
+    db = linear_to_db(intensity)
+    db_clipped = clip_vv_db(db)  # reuse VV's [-25, 0] range as the general SAR floor
+    gray = _db_to_uint8(db_clipped, vmin=-25, vmax=0)
+    return np.stack([gray, gray, gray], axis=-1)
+
+
 def _db_to_uint8(arr: np.ndarray, vmin: float, vmax: float) -> np.ndarray:
     """Linearly map a dB-range array to uint8 [0, 255]."""
     normalized = (arr - vmin) / (vmax - vmin)

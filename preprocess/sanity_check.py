@@ -48,6 +48,13 @@ def check_oscd(input_dir: Path) -> dict[str, Any]:
         "missing_locations": missing_pairs[:5],
     })
 
+    n_complete = len(locations) - len(missing_pairs)
+    if locations and n_complete == 0:
+        raise SanityCheckError(
+            f"No complete OSCD pairs found in {len(locations)} locations "
+            f"(all missing imgs_1/imgs_2) — mirror looks truncated or wrong path"
+        )
+
     # Check labels
     labels_dir = input_dir / "labels"
     if labels_dir.exists():
@@ -70,6 +77,9 @@ def check_vrsbench(input_dir: Path) -> dict[str, Any]:
     with open(json_path) as f:
         data = json.load(f)
 
+    if len(data) == 0:
+        raise SanityCheckError(f"VRSBench_train.json is empty — mirror looks truncated")
+
     results["checks"].append({"name": "total_entries", "count": len(data)})
 
     # Check task distribution
@@ -88,6 +98,10 @@ def check_vrsbench(input_dir: Path) -> dict[str, Any]:
     # Check image zips exist
     train_zip = input_dir / "Images_train.zip"
     val_zip = input_dir / "Images_val.zip"
+    if not train_zip.exists() and not val_zip.exists():
+        raise SanityCheckError(
+            f"Neither Images_train.zip nor Images_val.zip found in {input_dir}"
+        )
     results["checks"].append({
         "name": "image_zips",
         "train_exists": train_zip.exists(),
@@ -100,28 +114,39 @@ def check_vrsbench(input_dir: Path) -> dict[str, Any]:
 
 
 def check_bigearthnet(input_dir: Path) -> dict[str, Any]:
-    """Check BigEarthNet dataset structure."""
+    """Check BigEarthNet dataset structure (this script's Kaggle-side
+    metadata.parquet + s2_npy/s1_npy layout — see tier0_bigen.py)."""
     results = {"dataset": "bigearthnet", "checks": []}
 
-    # Check for metadata
     metadata_path = input_dir / "metadata.parquet"
+    h5_files = list(input_dir.glob("*.h5")) + list(input_dir.glob("*.hdf5"))
+    s2_dir = input_dir / "s2_npy"
+
+    if not metadata_path.exists() and not h5_files:
+        raise SanityCheckError(
+            f"Neither metadata.parquet nor .h5/.hdf5 files found in {input_dir}"
+        )
+
     if metadata_path.exists():
         import pandas as pd
         metadata = pd.read_parquet(metadata_path)
+        if len(metadata) == 0:
+            raise SanityCheckError(f"metadata.parquet in {input_dir} has 0 rows")
         results["checks"].append({"name": "total_patches", "count": len(metadata)})
 
-        # Check country distribution
+        if s2_dir.exists():
+            n_npy = len(list(s2_dir.glob("*.npy")))
+            if n_npy == 0:
+                raise SanityCheckError(f"s2_npy/ in {input_dir} has no .npy patches")
+            results["checks"].append({"name": "s2_npy_count", "count": n_npy})
+
         if "country" in metadata.columns:
             countries = metadata["country"].value_counts().to_dict()
             results["checks"].append({"name": "countries", "count": len(countries)})
 
-        # Check label distribution
         if "labels" in metadata.columns:
-            has_labels = True
-            results["checks"].append({"name": "has_labels_column", "value": has_labels})
+            results["checks"].append({"name": "has_labels_column", "value": True})
     else:
-        # Check for HDF5 files
-        h5_files = list(input_dir.glob("*.h5")) + list(input_dir.glob("*.hdf5"))
         results["checks"].append({"name": "h5_files", "count": len(h5_files)})
 
     results["status"] = "pass"
@@ -132,20 +157,26 @@ def check_rsvqa_hr(input_dir: Path) -> dict[str, Any]:
     """Check RSVQA-HR dataset structure."""
     results = {"dataset": "rsvqa_hr", "checks": []}
 
-    # Check annotation files
+    found_split = False
     for split in ["train", "val", "test"]:
         split_path = input_dir / f"{split}.json"
         if split_path.exists():
+            found_split = True
             with open(split_path) as f:
                 data = json.load(f)
             count = len(data) if isinstance(data, list) else len(data.get("questions", []))
             results["checks"].append({"name": f"{split}_count", "count": count})
 
-    # Check images directory
+    if not found_split:
+        raise SanityCheckError(f"No train.json/val.json/test.json found in {input_dir}")
+
     images_dir = input_dir / "images"
+    n_images = 0
     if images_dir.exists():
         n_images = len(list(images_dir.glob("*.png"))) + len(list(images_dir.glob("*.jpg")))
         results["checks"].append({"name": "image_count", "count": n_images})
+    if not images_dir.exists() or n_images == 0:
+        raise SanityCheckError(f"No images found under {images_dir}")
 
     results["status"] = "pass"
     return results
@@ -155,14 +186,18 @@ def check_cdvqa(input_dir: Path) -> dict[str, Any]:
     """Check CDVQA dataset structure."""
     results = {"dataset": "cdvqa", "checks": []}
 
-    # Check split files (train/val only)
+    found_split = False
     for split in ["train", "val"]:
         split_path = input_dir / f"{split}.json"
         if split_path.exists():
+            found_split = True
             with open(split_path) as f:
                 data = json.load(f)
             count = len(data) if isinstance(data, list) else len(data.get("questions", []))
             results["checks"].append({"name": f"{split}_count", "count": count})
+
+    if not found_split:
+        raise SanityCheckError(f"Neither train.json nor val.json found in {input_dir}")
 
     # Reject test splits
     test_path = input_dir / "test.json"
@@ -177,6 +212,7 @@ def check_levir_cd(input_dir: Path) -> dict[str, Any]:
     """Check LEVIR-CD dataset structure."""
     results = {"dataset": "levir_cd", "checks": []}
 
+    found_any = False
     for split in ["train", "val", "test"]:
         split_dir = input_dir / split
         if split_dir.exists():
@@ -187,6 +223,8 @@ def check_levir_cd(input_dir: Path) -> dict[str, Any]:
             n_before = len(list(a_dir.glob("*.png"))) if a_dir.exists() else 0
             n_after = len(list(b_dir.glob("*.png"))) if b_dir.exists() else 0
             n_labels = len(list(label_dir.glob("*.png"))) if label_dir.exists() else 0
+            if n_before > 0 or n_after > 0:
+                found_any = True
 
             results["checks"].append({
                 "name": f"{split}_counts",
@@ -194,6 +232,16 @@ def check_levir_cd(input_dir: Path) -> dict[str, Any]:
                 "after": n_after,
                 "labels": n_labels,
             })
+
+    if not found_any:
+        raise SanityCheckError(f"No LEVIR-CD before/after images found under {input_dir}")
+
+    train_dir = input_dir / "train"
+    if not train_dir.exists() or not list((train_dir / "A").glob("*.png")):
+        raise SanityCheckError(
+            f"train/ split is empty or missing under {input_dir} — "
+            f"tier1_levir_cd.py only trains from train/"
+        )
 
     results["status"] = "pass"
     return results
@@ -203,26 +251,29 @@ def check_spacenet6(input_dir: Path) -> dict[str, Any]:
     """Check SpaceNet 6 dataset structure."""
     results = {"dataset": "spacenet6", "checks": []}
 
-    # Check train directory
     train_dir = input_dir / "train"
-    if train_dir.exists():
-        images_dir = train_dir / "images"
-        labels_dir = train_dir / "labels"
+    if not train_dir.exists():
+        raise SanityCheckError(f"train/ directory not found in {input_dir}")
 
-        n_images = len(list(images_dir.glob("*.tif"))) if images_dir.exists() else 0
-        n_labels = len(list(labels_dir.glob("*.geojson"))) if labels_dir.exists() else 0
+    images_dir = train_dir / "images"
+    labels_dir = train_dir / "labels"
 
-        results["checks"].append({
-            "name": "train_counts",
-            "images": n_images,
-            "labels": n_labels,
-        })
+    n_images = len(list(images_dir.glob("*.tif"))) if images_dir.exists() else 0
+    n_labels = len(list(labels_dir.glob("*.geojson"))) if labels_dir.exists() else 0
 
-        # Check for SAR
-        sar_dir = train_dir / "sar"
-        if sar_dir.exists():
-            n_sar = len(list(sar_dir.glob("*.tif")))
-            results["checks"].append({"name": "sar_count", "count": n_sar})
+    if n_images == 0:
+        raise SanityCheckError(f"No .tif tiles found under {images_dir}")
+
+    results["checks"].append({
+        "name": "train_counts",
+        "images": n_images,
+        "labels": n_labels,
+    })
+
+    sar_dir = train_dir / "sar"
+    if sar_dir.exists():
+        n_sar = len(list(sar_dir.glob("*.tif")))
+        results["checks"].append({"name": "sar_count", "count": n_sar})
 
     results["status"] = "pass"
     return results
@@ -235,9 +286,12 @@ def check_sardet(input_dir: Path) -> dict[str, Any]:
     images_dir = input_dir / "images"
     labels_dir = input_dir / "labels"
 
+    n_images = 0
     if images_dir.exists():
         n_images = len(list(images_dir.glob("*.png"))) + len(list(images_dir.glob("*.jpg")))
         results["checks"].append({"name": "image_count", "count": n_images})
+    if not images_dir.exists() or n_images == 0:
+        raise SanityCheckError(f"No images found under {images_dir}")
 
     if labels_dir.exists():
         n_labels = len(list(labels_dir.glob("*.txt")))
@@ -251,17 +305,23 @@ def check_sen2lulc(input_dir: Path) -> dict[str, Any]:
     """Check Sen-2 LULC dataset structure."""
     results = {"dataset": "sen2lulc", "checks": []}
 
-    # Check metadata
+    found_metadata = False
     for name in ["metadata.csv", "annotations.json"]:
         meta_path = input_dir / name
         if meta_path.exists():
+            found_metadata = True
             results["checks"].append({"name": "metadata_file", "file": name, "exists": True})
 
-    # Check images
+    if not found_metadata:
+        raise SanityCheckError(f"Neither metadata.csv nor annotations.json found in {input_dir}")
+
     images_dir = input_dir / "images"
+    n_images = 0
     if images_dir.exists():
         n_images = len(list(images_dir.glob("*.png")))
         results["checks"].append({"name": "image_count", "count": n_images})
+    if not images_dir.exists() or n_images == 0:
+        raise SanityCheckError(f"No images found under {images_dir}")
 
     results["status"] = "pass"
     return results

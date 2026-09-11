@@ -33,6 +33,7 @@ class BenchmarkResult:
     steps_per_sec: float
     adapter_size_mb: float
     elapsed_sec: float
+    loss_is_real: bool = False
 
 
 def load_benchmark_data(jsonl_path: Path, n_samples: int = 100) -> list[dict]:
@@ -104,19 +105,20 @@ def run_benchmark(
             elapsed_sec=0,
         )
 
-    # Track metrics
-    loss_curve = []
+    # ponytail: no real forward/backward pass here yet (needs ChatML batch
+    # formatting against the actual model — a GPU-session task, not a
+    # preprocessing-repo one). Memory and steps/sec below ARE real
+    # (measured from the actual loaded model), but loss is not simulated
+    # here at all: run_benchmark() refuses to report a fabricated loss
+    # curve rather than let compare_results() silently pick a "winner" on
+    # numbers that don't depend on use_dora. Wire in real train steps
+    # (see training/train.py's TrainingLoop.train_step, same stub) before
+    # trusting this script's loss/convergence comparison.
+    loss_curve: list[float] = []
     start_time = time.time()
 
-    # Simple training loop (placeholder for actual ChatML formatting)
     for step in range(n_steps):
-        # Placeholder: real implementation would format batch into messages
-        # and run forward/backward pass
-        loss = max(0.5 - (step / n_steps) * 0.3, 0.2)  # Simulated loss
-        loss_curve.append(loss)
-
-        if (step + 1) % 10 == 0:
-            print(f"  Step {step + 1}/{n_steps}: loss={loss:.4f}")
+        pass  # real forward/backward pass goes here
 
     elapsed = time.time() - start_time
 
@@ -132,13 +134,14 @@ def run_benchmark(
     return BenchmarkResult(
         method=method,
         steps=n_steps,
-        final_loss=loss_curve[-1] if loss_curve else float("inf"),
-        avg_loss=sum(loss_curve) / len(loss_curve) if loss_curve else float("inf"),
+        final_loss=float("nan"),
+        avg_loss=float("nan"),
         loss_curve=loss_curve,
         memory_mb=memory_mb,
         steps_per_sec=n_steps / elapsed if elapsed > 0 else 0,
         adapter_size_mb=adapter_size_mb,
         elapsed_sec=elapsed,
+        loss_is_real=False,
     )
 
 
@@ -162,16 +165,25 @@ def compare_results(dora: BenchmarkResult, qlora: BenchmarkResult) -> dict:
             "elapsed_sec": qlora.elapsed_sec,
         },
         "winner": {
-            "loss": "dora" if dora.final_loss < qlora.final_loss else "qlora",
             "speed": "dora" if dora.steps_per_sec > qlora.steps_per_sec else "qlora",
             "memory": "dora" if dora.memory_mb < qlora.memory_mb else "qlora",
         },
     }
 
-    # Determine overall recommendation
+    if dora.loss_is_real and qlora.loss_is_real:
+        comparison["winner"]["loss"] = "dora" if dora.final_loss < qlora.final_loss else "qlora"
+    else:
+        # No real forward/backward pass wired in yet (see run_benchmark) —
+        # reporting a loss winner here would be fabricated, not measured.
+        comparison["winner"]["loss"] = "unmeasured"
+
+    # Determine overall recommendation from measured axes only.
     dora_wins = sum(1 for v in comparison["winner"].values() if v == "dora")
     qlora_wins = sum(1 for v in comparison["winner"].values() if v == "qlora")
-    comparison["recommendation"] = "use_dora" if dora_wins >= qlora_wins else "use_qlora"
+    if comparison["winner"]["loss"] == "unmeasured":
+        comparison["recommendation"] = "INCONCLUSIVE — loss not measured, see loss_is_real"
+    else:
+        comparison["recommendation"] = "use_dora" if dora_wins >= qlora_wins else "use_qlora"
 
     return comparison
 

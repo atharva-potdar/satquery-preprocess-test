@@ -28,6 +28,7 @@ from preprocess.common.sar import (
     clip_vv_db,
     downsample_sar,
     linear_to_db,
+    sar_intensity_pseudo_gray,
     sar_pseudo_rgb,
 )
 from preprocess.common.stats import GlobalPercentileStats, clip_percentile
@@ -240,6 +241,28 @@ class TestSarPseudoRgb:
         rgb1 = sar_pseudo_rgb(vv, vh)
         rgb2 = sar_pseudo_rgb(vv, vh)
         np.testing.assert_array_equal(rgb1, rgb2)
+
+
+class TestSarIntensityPseudoGray:
+    def test_shape_and_dtype(self):
+        intensity = np.random.rand(32, 32).astype(np.float32) * 0.1
+        gray = sar_intensity_pseudo_gray(intensity)
+        assert gray.shape == (32, 32, 3)
+        assert gray.dtype == np.uint8
+
+    def test_channels_identical(self):
+        """Honest single-pol render: R, G, B must be identical — no
+        fabricated per-channel variation."""
+        intensity = np.random.rand(16, 16).astype(np.float32) * 0.05
+        gray = sar_intensity_pseudo_gray(intensity)
+        np.testing.assert_array_equal(gray[:, :, 0], gray[:, :, 1])
+        np.testing.assert_array_equal(gray[:, :, 1], gray[:, :, 2])
+
+    def test_deterministic(self):
+        intensity = np.ones((8, 8), dtype=np.float32) * 0.02
+        g1 = sar_intensity_pseudo_gray(intensity)
+        g2 = sar_intensity_pseudo_gray(intensity)
+        np.testing.assert_array_equal(g1, g2)
 
 
 class TestDownsampleSar:

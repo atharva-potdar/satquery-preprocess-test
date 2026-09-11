@@ -51,6 +51,7 @@ import numpy as np
 from preprocess.common.bbox import pixel_to_normalized
 from preprocess.common.gsd import assign_gsd_bucket
 from preprocess.common.io import Manifest, append_jsonl, write_png
+from preprocess.common.sample import stratified_sample
 from preprocess.validator import validate_sample
 
 _DATASET = "sen2lulc"
@@ -149,9 +150,19 @@ def parse_sen2lulc_sample(
                 bbox = mask_to_bbox(mask_path)
                 break
 
-    # Build response from label
-    if isinstance(label, int) and 0 <= label < len(_LULC_CLASSES):
-        response = _LULC_CLASSES[label]
+    # Build response from label. CSV-sourced labels are always strings
+    # (csv.DictReader doesn't type-coerce) — "2" must still resolve to
+    # "Water", not fall through to being used as a literal class name.
+    label_idx: int | None = None
+    if isinstance(label, bool):
+        pass
+    elif isinstance(label, int):
+        label_idx = label
+    elif isinstance(label, str) and label.strip().lstrip("-").isdigit():
+        label_idx = int(label.strip())
+
+    if label_idx is not None and 0 <= label_idx < len(_LULC_CLASSES):
+        response = _LULC_CLASSES[label_idx]
     elif isinstance(label, str) and label:
         response = label
     else:
@@ -201,16 +212,31 @@ def run_tier3_sen2lulc(
             break
 
     masks_dir = None
-    for name in ["masks", " Masks", "label", "labels"]:
+    for name in ["masks", "Masks", "label", "labels"]:
         candidate = input_dir / name
         if candidate.exists():
             masks_dir = candidate
             break
 
+    print(f"Loaded {len(annotations)} annotations")
+
+    # Selection (spec): "5% (~10k of 213,761), stratified uniform across
+    # 7 classes". Without this, the full 213k-entry set gets processed —
+    # a 20x resource blowout against Kaggle's 20GB /kaggle/working cap.
+    if sample_fraction < 1.0:
+        def _label_key(entry: dict) -> object:
+            return entry.get("label", entry.get("class", "unknown"))
+
+        annotations = stratified_sample(
+            annotations, key_fn=_label_key, fraction=sample_fraction, seed=seed,
+        )
+        print(f"Stratified sample: {len(annotations)} annotations "
+              f"({sample_fraction:.0%} per class)")
+
     total = len(annotations)
     if max_samples:
         total = min(total, max_samples)
-    print(f"Loaded {len(annotations)} annotations, processing {total}")
+    print(f"Processing {total}")
 
     stats = {"processed": 0, "skipped": 0, "failed": 0}
     start = time.time()

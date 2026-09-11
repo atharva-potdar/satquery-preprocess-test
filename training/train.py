@@ -316,23 +316,24 @@ class TrainingLoop:
 
         Returns loss dict.
         """
-        # This is a placeholder for the actual training logic
-        # Real implementation would:
-        # 1. Format batch into ChatML messages
+        # ponytail: no real forward/backward pass yet. Real implementation:
+        # 1. Format batch into ChatML messages (per-sample pair_type ->
+        #    template, per Section 11 of SPEC.md)
         # 2. Tokenize with image inputs
         # 3. Forward pass with loss computation
         # 4. Backward pass with gradient accumulation
         # 5. Optimizer step
-
-        return {"loss": 0.0}
+        # Needs a live GPU session to write+verify against the real
+        # Unsloth/Qwen3-VL API — do this on Kaggle, not blind.
+        return {"loss": float("nan")}
 
     def validate(self, model, tokenizer, val_data: list[dict]) -> dict[str, float]:
         """Run validation and return metrics."""
         if not val_data:
-            return {"val_loss": 0.0}
+            return {"val_loss": float("nan")}
 
-        # Placeholder for validation logic
-        return {"val_loss": 0.0}
+        # ponytail: same stub as train_step — no real forward pass yet.
+        return {"val_loss": float("nan")}
 
     def save_checkpoint(self, model, step: int):
         """Save model checkpoint."""
@@ -363,6 +364,11 @@ class TrainingLoop:
 
     def run(self):
         """Main training loop."""
+        print("=" * 60)
+        print("  WARNING: train_step()/validate() are stubs (return NaN loss).")
+        print("  This loop moves data and saves checkpoints on schedule but")
+        print("  does NOT actually train anything yet. See train_step().")
+        print("=" * 60)
         print(f"Starting Stage {self.config.training.stage} training")
         print(f"  Model: {self.config.model.name}")
         print(f"  DoRA: {self.config.model.use_dora}")

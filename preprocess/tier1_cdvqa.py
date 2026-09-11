@@ -6,10 +6,12 @@ changes between dates. Uses SECOND imagery (0.5m-2m resolution).
 Spec treatment:
     - R1: RGB channels
     - R2: percentile normalization (deferred)
-    - R4: NOT dual-resolution (CDVQA has known native resolution)
+    - R4: NOT dual-resolution — the Tier 1 table doesn't tag CDVQA with R4
+      (unlike vrsbench/rsvqa_hr/levir_cd/sn6_opt), and SECOND imagery spans
+      ~0.5-2m per scene rather than one fixed native GSD anyway.
     - pair_type: bitemporal
     - dataset enum: "cdvqa"
-    - gsd_bucket: [GSD:0.5m] (SECOND native)
+    - gsd_bucket: VHR-native (categorical — see common/gsd.py)
     - task: change_vqa
 
 CDVQA structure:

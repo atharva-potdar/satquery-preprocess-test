@@ -40,6 +40,7 @@ import numpy as np
 from preprocess.common.bbox import pixel_to_normalized
 from preprocess.common.gsd import assign_gsd_bucket, create_proxy_sample
 from preprocess.common.io import Manifest, append_jsonl, write_png
+from preprocess.common.sample import quantile_edges, stratified_sample
 from preprocess.validator import validate_sample
 
 _DATASET = "levir_cd"
@@ -74,6 +75,16 @@ def find_levir_pairs(split_dir: Path) -> list[dict[str, Any]]:
             })
 
     return pairs
+
+
+def change_fraction(mask_path: Path | None) -> float:
+    """Fraction of changed pixels in a LEVIR-CD label mask — the
+    stratification key for "stratified by change magnitude decile"."""
+    if mask_path is None or not mask_path.exists():
+        return 0.0
+    from PIL import Image
+    mask = np.array(Image.open(str(mask_path)).convert("L"))
+    return float((mask > 127).mean())
 
 
 def mask_to_bbox(mask_path: Path, image_shape: tuple[int, int]) -> list[list[float]] | None:
@@ -184,12 +195,23 @@ def run_tier1_levir_cd(
     pairs = find_levir_pairs(train_dir)
     print(f"Found {len(pairs)} LEVIR-CD pairs in train split")
 
-    # Subsample
-    import random
-    rng = random.Random(seed)
-    if sample_fraction < 1.0:
-        n_sample = max(1, int(len(pairs) * sample_fraction))
-        pairs = rng.sample(pairs, min(n_sample, len(pairs)))
+    # Selection (spec): "stratified by change magnitude, not top decile" —
+    # bucket pairs into change-fraction deciles and sample proportionally
+    # from every bucket, so near-zero-change pairs stay represented.
+    if sample_fraction < 1.0 and pairs:
+        fractions = [change_fraction(p["mask"]) for p in pairs]
+        edges = quantile_edges(fractions, n_buckets=10)
+
+        from preprocess.common.sample import quantile_bucket
+        deciles = [quantile_bucket(f, edges) for f in fractions]
+        keyed_pairs = list(zip(pairs, deciles))
+
+        pairs = [
+            p for p, _ in stratified_sample(
+                keyed_pairs, key_fn=lambda item: item[1],
+                fraction=sample_fraction, seed=seed,
+            )
+        ]
 
     total = len(pairs)
     if max_samples:
@@ -212,13 +234,23 @@ def run_tier1_levir_cd(
 
         sample["gsd_bucket"] = native_bucket
 
-        ok, errs = validate_sample(sample)
-        if not ok:
-            print(f"  [VALID] {sample_id}: {errs}", file=sys.stderr)
+        # R4: dual-resolution branching (native + CARTOSAT-proxy).
+        rows = [sample, create_proxy_sample(sample)]
+
+        ok_all = True
+        for row in rows:
+            ok, errs = validate_sample(row)
+            if not ok:
+                print(f"  [VALID] {row['id']}: {errs}", file=sys.stderr)
+                ok_all = False
+                break
+        if not ok_all:
             stats["failed"] += 1
             continue
 
-        append_jsonl(sample, jsonl_path)
+        for row in rows:
+            append_jsonl(row, jsonl_path)
+
         manifest.mark_processed(
             sample_id=sample_id,
             dataset=_DATASET,

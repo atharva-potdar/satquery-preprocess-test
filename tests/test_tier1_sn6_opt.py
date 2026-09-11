@@ -5,9 +5,16 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import numpy as np
 import pytest
+import tifffile
 
-from preprocess.tier1_sn6_opt import load_geojson_labels, polygons_to_bboxes, process_tile
+from preprocess.tier1_sn6_opt import (
+    load_geojson_labels,
+    polygons_to_bboxes,
+    process_tile,
+    run_tier1_sn6_opt,
+)
 
 
 class TestLoadGeojsonLabels:
@@ -96,6 +103,103 @@ class TestProcessTile:
         assert sample is not None
         assert sample["id"] == "sn6_tile001"
         assert sample["dataset"] == "sn6_opt"
+
+
+    def test_bbox_count_matches_response_count(self, tmp_path):
+        """Response text must describe exactly the boxes returned, not a
+        total that only the first box represents."""
+        img = np.random.randint(0, 255, (64, 64, 3), dtype=np.uint8)
+        tif_path = tmp_path / "tile002.tif"
+        tifffile.imwrite(str(tif_path), img)
+
+        def _poly(x0, y0, x1, y1):
+            return [[x0, y0], [x1, y0], [x1, y1], [x0, y1], [x0, y0]]
+
+        geojson = {
+            "type": "FeatureCollection",
+            "features": [
+                {"type": "Feature", "geometry": {"type": "Polygon", "coordinates": [_poly(0, 0, 10, 10)]}},
+                {"type": "Feature", "geometry": {"type": "Polygon", "coordinates": [_poly(20, 20, 30, 30)]}},
+                {"type": "Feature", "geometry": {"type": "Polygon", "coordinates": [_poly(40, 40, 50, 50)]}},
+            ],
+        }
+        geojson_path = tmp_path / "tile002.geojson"
+        geojson_path.write_text(json.dumps(geojson))
+
+        output_dir = tmp_path / "output"
+        output_dir.mkdir()
+
+        sample = process_tile(tif_path, geojson_path, output_dir, "tile002")
+        assert sample is not None
+        assert sample["bbox"] is not None
+        assert len(sample["bbox"]) == 3
+        assert "3 buildings detected" in sample["response"]
+
+
+def _make_sn6_input(root: Path, tiles: list[int]) -> None:
+    """tiles: list of building counts, one tile per entry."""
+    images_dir = root / "train" / "images"
+    labels_dir = root / "train" / "labels"
+    images_dir.mkdir(parents=True)
+    labels_dir.mkdir(parents=True)
+
+    for i, n_buildings in enumerate(tiles):
+        tile_id = f"tile{i:04d}"
+        img = np.random.randint(0, 255, (32, 32, 3), dtype=np.uint8)
+        tifffile.imwrite(str(images_dir / f"{tile_id}.tif"), img)
+
+        features = []
+        for b in range(n_buildings):
+            x0 = (b * 2) % 30
+            y0 = (b * 3) % 30
+            features.append({
+                "type": "Feature",
+                "geometry": {
+                    "type": "Polygon",
+                    "coordinates": [[[x0, y0], [x0 + 1, y0], [x0 + 1, y0 + 1], [x0, y0 + 1], [x0, y0]]],
+                },
+            })
+        geojson = {"type": "FeatureCollection", "features": features}
+        (labels_dir / f"{tile_id}.geojson").write_text(json.dumps(geojson))
+
+
+class TestRunTier1Sn6Opt:
+    def test_r4_dual_resolution_doubles_rows(self, tmp_path):
+        input_dir = tmp_path / "input"
+        _make_sn6_input(input_dir, tiles=[2, 5, 0])
+
+        output_dir = tmp_path / "output"
+        stats = run_tier1_sn6_opt(input_dir, output_dir, sample_fraction=1.0)
+        assert stats["processed"] == 3
+
+        with open(output_dir / "sn6_opt.jsonl") as f:
+            lines = [json.loads(l) for l in f if l.strip()]
+        assert len(lines) == 6
+        assert any("CARTOSAT-proxy" in l["gsd_bucket"] for l in lines)
+
+    def test_selected_tile_ids_written(self, tmp_path):
+        input_dir = tmp_path / "input"
+        _make_sn6_input(input_dir, tiles=[1, 2, 3])
+        output_dir = tmp_path / "output"
+        run_tier1_sn6_opt(input_dir, output_dir, sample_fraction=1.0)
+
+        selected_path = output_dir / "selected_tile_ids.json"
+        assert selected_path.exists()
+        ids = json.loads(selected_path.read_text())
+        assert set(ids) == {"tile0000", "tile0001", "tile0002"}
+
+    def test_stratified_sampling_keeps_sparse_and_dense(self, tmp_path):
+        input_dir = tmp_path / "input"
+        # Mostly dense tiles, a couple of empty (sparse) ones.
+        _make_sn6_input(input_dir, tiles=[10] * 10 + [0, 0])
+
+        output_dir = tmp_path / "output"
+        run_tier1_sn6_opt(input_dir, output_dir, sample_fraction=0.3, seed=1)
+
+        selected = json.loads((output_dir / "selected_tile_ids.json").read_text())
+        counts = {"tile0010": 0, "tile0011": 0}  # the 2 sparse (0-building) tiles
+        assert any(t in selected for t in counts), \
+            "Sparse-density stratum was dropped by subsampling"
 
 
 class TestSn6OptSchema:

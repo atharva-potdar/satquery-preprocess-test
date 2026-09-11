@@ -11,11 +11,15 @@ Section 5 rules (authoritative):
         SpaceNet6 SAR:      0.5 m    → [GSD:0.5m]
         SARDet-100K:        2–10 m   → [GSD:5m] (post-R5 midpoint)
         BigEarthNet:        10 m     → [GSD:10m]
+        OSCD:               10 m Sentinel-2, same sensor as BigEarthNet → [GSD:10m]
+        Sen-2 LULC:         10 m Sentinel-2 → [GSD:10m]
 
     Variable/unknown GSD datasets:
         VRSBench            → VHR-native  (native branch)
         VRSBench proxy      → CARTOSAT-proxy
-        CDVQA               → variable SECOND imagery → CARTOSAT-proxy
+        CDVQA                → SECOND imagery spans ~0.5-2m per scene, no single
+                                 native value → VHR-native (no R4 doubling — see
+                                 DUAL_RESOLUTION_DATASETS below)
 
 R4 dual-resolution branching (for benchmark datasets only):
     Each training image → two independent samples:
@@ -54,18 +58,23 @@ _KNOWN_GSD: dict[str, str] = {
     "sn6_sar":    "[GSD:0.5m]",
     "sardet":     "[GSD:5m]",      # midpoint of 2–10m RISAT band
     "bigen":      "[GSD:10m]",     # BigEarthNet S1 anchor
+    "oscd":       "[GSD:10m]",     # Sentinel-2, same native GSD as BigEarthNet
+    "sen2lulc":   "[GSD:10m]",     # Sentinel-2
 }
 
 # Datasets eligible for R4 dual-resolution branching.
-# Resolved spec ambiguity (Section 2 R4 text vs Tier 1 table):
-#   CDVQA gets R4 (official benchmark with prescribed test split,
-#   matching VRSBench and RSVQA-HR's status).
-#   LEVIR-CD does NOT (supplementary dataset at 10% usage, not a
-#   primary evaluation benchmark).
+# Resolved spec ambiguity (Section 2 R4 prose names CDVQA; the Tier 1
+# table's per-row Treatment column is more specific and is authoritative
+# here): every Tier 1 row whose Treatment column literally says "R4"
+# gets it — vrsbench, rsvqa_hr, levir_cd, sn6_opt. CDVQA's row says
+# "native res kept" (no R4) and OSCD's row doesn't mention R4 either;
+# both have fixed/known native resolutions already in the VHR range,
+# so doubling them buys no resolution diversity.
 DUAL_RESOLUTION_DATASETS: set[str] = {
     "vrsbench",
     "rsvqa_hr",
-    "cdvqa",
+    "levir_cd",
+    "sn6_opt",
 }
 
 # Proxy bucket names

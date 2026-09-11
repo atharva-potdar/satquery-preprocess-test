@@ -165,6 +165,20 @@ class TestCrossFieldChecks:
         assert any("optical+sar" in e for e in errs), \
             f"Expected optical+sar requirement error, got: {errs}"
 
+    def test_grounding_with_empty_bbox_list_rejected(self):
+        """Regression: bbox=[] (empty, not null) used to slip past the
+        None-only check on a grounding task."""
+        sample = {
+            "id": "x", "dataset": "vrsbench", "task": "grounding",
+            "image_path": ["a.png"], "pair_type": "single",
+            "gsd_bucket": "VHR-native", "split": "train",
+            "instruction": "Where?", "response": "Here.",
+            "bbox": [], "modality": "optical",
+        }
+        errs = cross_field_checks(sample)
+        assert any("non-empty bbox" in e for e in errs), \
+            f"Expected empty-bbox rejection, got: {errs}"
+
     def test_single_with_two_images(self):
         sample = {
             "id": "x", "dataset": "cdvqa", "task": "vqa",

@@ -36,11 +36,31 @@ import numpy as np
 from preprocess.common.bbox import pixel_to_normalized
 from preprocess.common.gsd import assign_gsd_bucket
 from preprocess.common.io import Manifest, append_jsonl, write_png
-from preprocess.common.sar import sar_pseudo_rgb
+from preprocess.common.sample import stratified_sample
+from preprocess.common.sar import sar_intensity_pseudo_gray
 from preprocess.validator import validate_sample
 
 _DATASET = "sardet"
 _CATEGORIES = ["ship", "aircraft", "bridge", "tank", "car", "harbor"]
+
+
+def primary_class(label_path: Path) -> str:
+    """First annotated class in a YOLO label file — the stratification
+    key for "stratified uniform across 6 categories"."""
+    if not label_path.exists():
+        return "unknown"
+    with open(label_path) as f:
+        for line in f:
+            parts = line.strip().split()
+            if not parts:
+                continue
+            try:
+                class_id = int(parts[0])
+            except ValueError:
+                continue
+            if 0 <= class_id < len(_CATEGORIES):
+                return _CATEGORIES[class_id]
+    return "unknown"
 
 
 def load_yolo_labels(
@@ -107,13 +127,11 @@ def process_sardet_sample(
         if img.mode != "L":
             img = img.convert("L")  # SAR is single-channel
 
-        # Convert to pseudo-RGB
+        # SARDet-100K ships single-channel intensity PNGs — no separate
+        # VV/VH. R3's dual-pol B=(VV-VH) needs two real channels, so we
+        # don't fabricate a second one; see sar_intensity_pseudo_gray().
         arr = np.array(img).astype(np.float32)
-        # Create dummy VV/VH from grayscale
-        vv = arr
-        vh = arr * 0.8  # Simulate VH offset
-
-        rgb = sar_pseudo_rgb(vv, vh)
+        rgb = sar_intensity_pseudo_gray(arr)
         w, h = rgb.shape[1], rgb.shape[0]
     except Exception as e:
         print(f"  [FAIL] {sample_id}: {e}", file=sys.stderr)
@@ -179,12 +197,18 @@ def run_tier2_sardet(
     image_paths = sorted(images_dir.glob("*.png")) + sorted(images_dir.glob("*.jpg"))
     print(f"Found {len(image_paths)} SARDet-100K images")
 
-    # Subsample
-    import random
-    rng = random.Random(seed)
-    if sample_fraction < 1.0:
-        n_sample = max(1, int(len(image_paths) * sample_fraction))
-        image_paths = rng.sample(image_paths, min(n_sample, len(image_paths)))
+    # Selection (spec): "stratified uniform across 6 categories".
+    if sample_fraction < 1.0 and image_paths:
+        keyed = [
+            (p, primary_class(labels_dir / f"{p.stem}.txt"))
+            for p in image_paths
+        ]
+        image_paths = [
+            p for p, _ in stratified_sample(
+                keyed, key_fn=lambda item: item[1],
+                fraction=sample_fraction, seed=seed,
+            )
+        ]
 
     total = len(image_paths)
     if max_samples:

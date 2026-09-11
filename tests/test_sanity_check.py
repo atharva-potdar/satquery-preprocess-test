@@ -39,6 +39,17 @@ class TestCheckOscd:
         with pytest.raises(SanityCheckError):
             check_oscd(tmp_path)
 
+    def test_all_pairs_incomplete_fails(self, tmp_path):
+        """Locations exist but none have both imgs_1 and imgs_2 — a
+        truncated/half-downloaded mirror must fail, not silently pass."""
+        images_dir = tmp_path / "images"
+        for i in range(5):
+            (images_dir / f"location_{i:02d}" / "imgs_1").mkdir(parents=True)
+            # imgs_2 deliberately missing for every location
+
+        with pytest.raises(SanityCheckError, match="No complete OSCD pairs"):
+            check_oscd(tmp_path)
+
 
 class TestCheckVrsbench:
     def test_valid_structure(self, tmp_path):
@@ -71,12 +82,18 @@ class TestCheckCdvqa:
         assert results["status"] == "pass"
 
     def test_rejects_test_split(self, tmp_path):
-        # Should warn but not fail
+        # A test.json alongside a real train/val should warn but not fail —
+        # tier1_cdvqa.py itself refuses to load test.json regardless.
         (tmp_path / "train.json").write_text(json.dumps([]))
         (tmp_path / "test.json").write_text(json.dumps([]))
 
         results = check_cdvqa(tmp_path)
         assert results["status"] == "pass"
+
+    def test_no_train_or_val_fails(self, tmp_path):
+        (tmp_path / "test.json").write_text(json.dumps([]))
+        with pytest.raises(SanityCheckError):
+            check_cdvqa(tmp_path)
 
 
 class TestCheckLevirCd:
@@ -109,6 +126,12 @@ class TestCheckSardet:
 
         results = check_sardet(tmp_path)
         assert results["status"] == "pass"
+
+    def test_empty_images_dir_fails(self, tmp_path):
+        (tmp_path / "images").mkdir()
+        (tmp_path / "labels").mkdir()
+        with pytest.raises(SanityCheckError):
+            check_sardet(tmp_path)
 
 
 class TestCheckRsvqaHr:

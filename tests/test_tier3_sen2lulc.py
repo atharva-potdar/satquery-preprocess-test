@@ -6,9 +6,16 @@ import csv
 import json
 from pathlib import Path
 
+import numpy as np
 import pytest
+from PIL import Image
 
-from preprocess.tier3_sen2lulc import load_metadata, mask_to_bbox, parse_sen2lulc_sample
+from preprocess.tier3_sen2lulc import (
+    load_metadata,
+    mask_to_bbox,
+    parse_sen2lulc_sample,
+    run_tier3_sen2lulc,
+)
 
 
 class TestLoadMetadata:
@@ -90,3 +97,63 @@ class TestParseSen2LulcSample:
                      "bbox", "modality"]
         for field in required:
             assert field in result, f"Missing field: {field}"
+
+
+def _make_sen2lulc_input(root: Path, class_counts: dict[int, int]) -> None:
+    images_dir = root / "images"
+    images_dir.mkdir(parents=True)
+    rows = []
+    idx = 0
+    for label, n in class_counts.items():
+        for _ in range(n):
+            image_id = f"img{idx:04d}"
+            Image.fromarray(np.zeros((16, 16, 3), dtype=np.uint8)).save(
+                str(images_dir / f"{image_id}.png"))
+            rows.append({"image_id": image_id, "label": label})
+            idx += 1
+
+    import csv as csv_mod
+    with open(root / "metadata.csv", "w", newline="") as f:
+        writer = csv_mod.DictWriter(f, fieldnames=["image_id", "label"])
+        writer.writeheader()
+        for r in rows:
+            writer.writerow(r)
+
+
+class TestRunTier3Sen2lulc:
+    def test_sample_fraction_actually_subsamples(self, tmp_path):
+        """Regression: sample_fraction used to be a dead parameter — the
+        full annotation set got processed regardless, risking a resource
+        blowout against Kaggle's 20GB /kaggle/working cap."""
+        input_dir = tmp_path / "input"
+        _make_sen2lulc_input(input_dir, {0: 100})
+
+        output_dir = tmp_path / "output"
+        stats = run_tier3_sen2lulc(input_dir, output_dir, sample_fraction=0.1, seed=1)
+        assert 5 <= stats["processed"] <= 20  # ~10% of 100, not all 100
+
+    def test_stratified_sampling_keeps_rare_class(self, tmp_path):
+        input_dir = tmp_path / "input"
+        _make_sen2lulc_input(input_dir, {0: 50, 2: 2})  # class 2 = Water, rare
+
+        output_dir = tmp_path / "output"
+        run_tier3_sen2lulc(input_dir, output_dir, sample_fraction=0.2, seed=1)
+
+        with open(output_dir / "sen2lulc.jsonl") as f:
+            lines = [json.loads(l) for l in f if l.strip()]
+        assert any(l["response"] == "Water" for l in lines), \
+            "Rare class (Water, n=2) was dropped by subsampling"
+
+    def test_all_rows_validate(self, tmp_path):
+        input_dir = tmp_path / "input"
+        _make_sen2lulc_input(input_dir, {0: 5, 1: 5})
+        output_dir = tmp_path / "output"
+        run_tier3_sen2lulc(input_dir, output_dir, sample_fraction=1.0)
+
+        from preprocess.validator import validate_sample
+        with open(output_dir / "sen2lulc.jsonl") as f:
+            for line in f:
+                if not line.strip():
+                    continue
+                ok, errs = validate_sample(json.loads(line))
+                assert ok, errs

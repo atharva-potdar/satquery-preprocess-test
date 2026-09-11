@@ -163,9 +163,9 @@ def cross_field_checks(sample: dict[str, Any]) -> list[str]:
         )
 
     # R-bbox: task <-> bbox presence
-    if task in _GROUNDING_TASKS and bbox is None:
+    if task in _GROUNDING_TASKS and (bbox is None or len(bbox) == 0):
         errors.append(
-            f"task='{task}' requires non-null bbox, got null"
+            f"task='{task}' requires a non-empty bbox list, got {bbox!r}"
         )
     if task in _VQA_LIKE_TASKS and bbox is not None:
         errors.append(

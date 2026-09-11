@@ -10,11 +10,11 @@ Usage:
 from __future__ import annotations
 
 import json
-import tarfile
 import time
 from collections import Counter
 from pathlib import Path
 
+from preprocess.common.io import ShardWriter
 from preprocess.validator import validate_sample
 
 
@@ -45,6 +45,39 @@ def validate_and_filter(
     return valid, errors
 
 
+def _select_source_files(jsonl_files: list[Path]) -> list[Path]:
+    """Pick which JSONL files in a tier dir actually feed the merge.
+
+    split_internal_val.py (when it has run) replaces `<stem>.jsonl` with
+    `<stem>_train.jsonl` + `<stem>_val_internal.jsonl` — those carry the
+    real split tags and must be preferred. Falling back to the original
+    `<stem>.jsonl` silently drops every val_internal row (it only exists
+    with everything tagged "train"), which is what happened here before:
+    merge always skipped `_train`/`_val_internal` files and re-read
+    the un-split original.
+    """
+    by_stem = {p.stem: p for p in jsonl_files}
+    train_suffix = "_train"
+    val_suffix = "_val_internal"
+
+    split_bases = {
+        stem[: -len(train_suffix)]
+        for stem in by_stem
+        if stem.endswith(train_suffix)
+    }
+
+    selected: list[Path] = []
+    for stem, path in by_stem.items():
+        if stem.endswith(train_suffix) or stem.endswith(val_suffix):
+            selected.append(path)
+            continue
+        if stem in split_bases:
+            continue  # superseded by <stem>_train.jsonl / _val_internal.jsonl
+        selected.append(path)  # no split output for this file — use as-is
+
+    return selected
+
+
 def merge_tiers(
     tier_dirs: list[Path],
 ) -> tuple[list[dict], list[dict]]:
@@ -62,9 +95,7 @@ def merge_tiers(
             print(f"  [WARN] No JSONL files in {tier_dir}")
             continue
 
-        for jsonl_path in jsonl_files:
-            if "_train" in jsonl_path.stem or "_val_internal" in jsonl_path.stem:
-                continue  # Skip split files, use originals
+        for jsonl_path in _select_source_files(jsonl_files):
             samples = load_jsonl(jsonl_path)
             valid, errors = validate_and_filter(samples, tier_name)
             all_valid.extend(valid)
@@ -75,16 +106,33 @@ def merge_tiers(
 
 
 def check_id_uniqueness(samples: list[dict]) -> list[str]:
-    """Return list of duplicate IDs."""
+    """Return list of duplicate IDs, formatted as '<id> (×N)'."""
     seen: dict[str, int] = {}
-    duplicates = []
     for s in samples:
         sid = s.get("id", "")
         seen[sid] = seen.get(sid, 0) + 1
-    for sid, count in seen.items():
-        if count > 1:
-            duplicates.append(f"{sid} (×{count})")
-    return duplicates
+    return [f"{sid} (×{count})" for sid, count in seen.items() if count > 1]
+
+
+def dedupe_by_id(samples: list[dict]) -> tuple[list[dict], int]:
+    """Keep the first occurrence of each id. Returns (deduped, n_dropped).
+
+    "id" is documented as globally unique (Section 4) — the schema can't
+    enforce that across files, so this is where cross-tier collisions
+    (mostly a same-id `id` scheme reused between two tier scripts) get
+    caught before they reach the training set as silent duplicates.
+    """
+    seen: set[str] = set()
+    out: list[dict] = []
+    dropped = 0
+    for s in samples:
+        sid = s.get("id", "")
+        if sid in seen:
+            dropped += 1
+            continue
+        seen.add(sid)
+        out.append(s)
+    return out, dropped
 
 
 def write_dataset(
@@ -100,19 +148,30 @@ def write_dataset(
 
 def tar_directory(
     src_dir: Path,
-    tar_path: Path,
+    tar_dir: Path,
     *,
+    prefix: str,
     include_jsonl: bool = False,
+    max_files_per_shard: int = 2000,
 ) -> int:
-    """Tar a directory of images. Returns file count."""
+    """Shard a directory of images into <=max_files_per_shard tar.gz archives.
+
+    Kaggle Dataset uploads cap raw file counts (Section 8), and a single
+    giant tar risks losing an entire tier's images to one failed
+    upload/session. ShardWriter (already tested) produces
+    `<prefix>_shard_0000.tar.gz`, `_0001.tar.gz`, ... in tar_dir.
+
+    Returns total file count across all shards.
+    """
+    writer = ShardWriter(tar_dir, prefix=prefix, max_files=max_files_per_shard)
     count = 0
-    with tarfile.open(tar_path, "w:gz") as tar:
-        for path in sorted(src_dir.rglob("*")):
-            if path.is_file():
-                if not include_jsonl and path.suffix == ".jsonl":
-                    continue
-                tar.add(path, arcname=path.relative_to(src_dir.parent))
-                count += 1
+    for path in sorted(src_dir.rglob("*")):
+        if path.is_file():
+            if not include_jsonl and path.suffix == ".jsonl":
+                continue
+            writer.add(path)
+            count += 1
+    writer.close()
     return count
 
 
@@ -176,12 +235,14 @@ def merge_and_package(
         if len(all_errors) > 10:
             print(f"    ... and {len(all_errors) - 10} more")
 
-    # Check ID uniqueness
+    # Check + drop ID collisions — a duplicate id must not reach the
+    # training set silently (it did before: this was report-only).
     dupes = check_id_uniqueness(all_valid)
     if dupes:
-        print(f"\n  {len(dupes)} duplicate IDs:")
+        print(f"\n  {len(dupes)} duplicate IDs (keeping first occurrence):")
         for d in dupes[:10]:
             print(f"    {d}")
+    all_valid, n_dropped = dedupe_by_id(all_valid)
 
     # Write merged dataset
     dataset_path = output_dir / "dataset.jsonl"
@@ -198,14 +259,15 @@ def merge_and_package(
     with open(stats_path, "w") as f:
         json.dump(stats, f, indent=2)
 
-    # Tar image shards if requested
+    # Shard-tar images if requested (Kaggle Dataset file-count cap: Section 8)
     if tar_shards:
         for tier_dir in tier_dirs:
             images_dir = tier_dir / "images"
             if images_dir.exists():
-                tar_path = output_dir / f"{tier_dir.name}_images.tar.gz"
-                count = tar_directory(images_dir, tar_path)
-                print(f"  Tared {count} files → {tar_path}")
+                count = tar_directory(
+                    images_dir, output_dir, prefix=f"{tier_dir.name}_images",
+                )
+                print(f"  Tared {count} files → {output_dir}/{tier_dir.name}_images_shard_*.tar.gz")
 
     elapsed = time.time() - start
     print(f"\nDone in {elapsed:.1f}s")

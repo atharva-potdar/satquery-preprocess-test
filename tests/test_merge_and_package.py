@@ -10,7 +10,9 @@ import pytest
 from preprocess.merge_and_package import (
     check_id_uniqueness,
     compute_stats,
+    dedupe_by_id,
     load_jsonl,
+    merge_and_package,
     merge_tiers,
     tar_directory,
     validate_and_filter,
@@ -109,6 +111,49 @@ class TestCheckIdUniqueness:
 
 
 # ---------------------------------------------------------------------------
+# dedupe_by_id
+# ---------------------------------------------------------------------------
+
+class TestDedupeById:
+    def test_keeps_first_drops_rest(self):
+        samples = [
+            _make_sample(sample_id="dup", dataset="vrsbench"),
+            _make_sample(sample_id="dup", dataset="oscd"),
+            _make_sample(sample_id="unique"),
+        ]
+        deduped, n_dropped = dedupe_by_id(samples)
+        assert n_dropped == 1
+        assert len(deduped) == 2
+        assert [s["dataset"] for s in deduped if s["id"] == "dup"] == ["vrsbench"]
+
+    def test_no_duplicates_drops_nothing(self):
+        samples = [_make_sample(sample_id=f"s{i}") for i in range(3)]
+        deduped, n_dropped = dedupe_by_id(samples)
+        assert n_dropped == 0
+        assert len(deduped) == 3
+
+
+class TestMergeAndPackageDedup:
+    def test_duplicate_ids_dont_reach_final_dataset(self, tmp_path):
+        """Regression: duplicate ids used to be reported but still written
+        into dataset.jsonl — merge_and_package() must actually drop them."""
+        tier = tmp_path / "tier1"
+        tier.mkdir()
+        _write_jsonl(
+            [_make_sample(sample_id="dup"), _make_sample(sample_id="dup")],
+            tier / "data.jsonl",
+        )
+
+        output_dir = tmp_path / "out"
+        stats = merge_and_package([tier], output_dir)
+        assert stats["duplicate_ids"] == 1
+        assert stats["total_samples"] == 1
+
+        dataset = load_jsonl(output_dir / "dataset.jsonl")
+        assert len(dataset) == 1
+
+
+# ---------------------------------------------------------------------------
 # write_dataset
 # ---------------------------------------------------------------------------
 
@@ -157,7 +202,10 @@ class TestMergeTiers:
         assert len(valid) == 5
         assert errors == []
 
-    def test_skips_split_files(self, tmp_path):
+    def test_prefers_split_files_over_original(self, tmp_path):
+        """When split_internal_val.py has run, its _train/_val_internal
+        files carry the real split tags and must be used INSTEAD of the
+        pre-split original — not skipped in favor of it."""
         tier = tmp_path / "tier1"
         tier.mkdir()
         _write_jsonl(
@@ -174,8 +222,37 @@ class TestMergeTiers:
         )
 
         valid, errors = merge_tiers([tier])
-        assert len(valid) == 1  # Only main.jsonl
+        ids = {s["id"] for s in valid}
+        assert ids == {"train", "val"}, \
+            f"Expected split files to supersede the original, got {ids}"
+
+    def test_uses_original_when_no_split_output_exists(self, tmp_path):
+        tier = tmp_path / "tier1"
+        tier.mkdir()
+        _write_jsonl(
+            [_make_sample(sample_id="main")],
+            tier / "data.jsonl",
+        )
+
+        valid, errors = merge_tiers([tier])
+        assert len(valid) == 1
         assert valid[0]["id"] == "main"
+
+    def test_val_internal_split_tag_survives_merge(self, tmp_path):
+        tier = tmp_path / "tier1"
+        tier.mkdir()
+        _write_jsonl(
+            [{**_make_sample(sample_id="train1"), "split": "train"}],
+            tier / "data_train.jsonl",
+        )
+        _write_jsonl(
+            [{**_make_sample(sample_id="val1"), "split": "val_internal"}],
+            tier / "data_val_internal.jsonl",
+        )
+
+        valid, errors = merge_tiers([tier])
+        splits = {s["id"]: s["split"] for s in valid}
+        assert splits == {"train1": "train", "val1": "val_internal"}
 
     def test_empty_tier(self, tmp_path):
         tier = tmp_path / "empty_tier"
@@ -195,10 +272,11 @@ class TestTarDirectory:
         (src / "a.png").write_bytes(b"\x89PNG")
         (src / "b.png").write_bytes(b"\x89PNG")
 
-        tar_path = tmp_path / "out.tar.gz"
-        count = tar_directory(src, tar_path)
+        tar_dir = tmp_path / "out"
+        count = tar_directory(src, tar_dir, prefix="test")
         assert count == 2
-        assert tar_path.exists()
+        shards = list(tar_dir.glob("test_shard_*.tar.gz"))
+        assert len(shards) == 1
 
     def test_skips_jsonl(self, tmp_path):
         src = tmp_path / "images"
@@ -206,9 +284,21 @@ class TestTarDirectory:
         (src / "a.png").write_bytes(b"\x89PNG")
         (src / "data.jsonl").write_text("{}")
 
-        tar_path = tmp_path / "out.tar.gz"
-        count = tar_directory(src, tar_path, include_jsonl=False)
+        tar_dir = tmp_path / "out"
+        count = tar_directory(src, tar_dir, prefix="test", include_jsonl=False)
         assert count == 1  # Only PNG
+
+    def test_shards_at_file_cap(self, tmp_path):
+        src = tmp_path / "images"
+        src.mkdir()
+        for i in range(5):
+            (src / f"img{i}.png").write_bytes(b"\x89PNG")
+
+        tar_dir = tmp_path / "out"
+        count = tar_directory(src, tar_dir, prefix="test", max_files_per_shard=2)
+        assert count == 5
+        shards = sorted(tar_dir.glob("test_shard_*.tar.gz"))
+        assert len(shards) == 3  # 2 + 2 + 1
 
 
 # ---------------------------------------------------------------------------

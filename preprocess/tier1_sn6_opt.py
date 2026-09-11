@@ -39,6 +39,7 @@ import numpy as np
 from preprocess.common.bbox import pixel_to_normalized
 from preprocess.common.gsd import assign_gsd_bucket, create_proxy_sample
 from preprocess.common.io import Manifest, append_jsonl, write_png
+from preprocess.common.sample import quantile_bucket, quantile_edges, stratified_sample
 from preprocess.validator import validate_sample
 
 _DATASET = "sn6_opt"
@@ -138,28 +139,28 @@ def process_tile(
     out_path = img_dir / f"sn6_{tile_id}.png"
     write_png(img, out_path)
 
-    # Load building footprints
+    # Load building footprints — keep every box, not just the first, so
+    # the response text (which reports the real count) and the bbox
+    # field agree with each other.
     polygons = load_geojson_labels(geojson_path)
     bboxes = polygons_to_bboxes(polygons, w, h)
-
-    bbox = bboxes[0] if bboxes else None
-    n_buildings = len(polygons)
+    n_buildings = len(bboxes)
 
     sample_id = f"sn6_{tile_id}"
 
     return {
         "id": sample_id,
         "dataset": _DATASET,
-        "task": "grounding" if bbox is not None else "vqa",
+        "task": "grounding" if bboxes else "vqa",
         "image_path": [str(out_path)],
         "pair_type": "single",
         "gsd_bucket": "",  # Filled by caller
         "split": "train",
-        "instruction": f"How many buildings are in this image?" if bbox is None
+        "instruction": "How many buildings are in this image?" if not bboxes
                        else "Locate the buildings in this image.",
-        "response": str(n_buildings) if bbox is None
-                    else f"{n_buildings} buildings detected.",
-        "bbox": [bbox] if bbox is not None else None,
+        "response": "0" if not bboxes
+                    else f"{n_buildings} building{'s' if n_buildings != 1 else ''} detected.",
+        "bbox": bboxes if bboxes else None,
         "modality": "optical",
     }
 
@@ -192,12 +193,28 @@ def run_tier1_sn6_opt(
     tile_paths = sorted(images_dir.glob("*.tif"))
     print(f"Found {len(tile_paths)} SpaceNet 6 tiles")
 
-    # Subsample
-    import random
-    rng = random.Random(seed)
-    if sample_fraction < 1.0:
-        n_sample = max(1, int(len(tile_paths) * sample_fraction))
-        tile_paths = rng.sample(tile_paths, min(n_sample, len(tile_paths)))
+    # Selection (spec): "stratified by building-density quartile" — bucket
+    # tiles by building-footprint count and sample proportionally from
+    # every quartile, so sparse and dense tiles both stay represented.
+    if sample_fraction < 1.0 and tile_paths:
+        densities = [
+            len(load_geojson_labels(labels_dir / f"{p.stem}.geojson"))
+            for p in tile_paths
+        ]
+        edges = quantile_edges(densities, n_buckets=4)
+        quartiles = [quantile_bucket(d, edges) for d in densities]
+        keyed = list(zip(tile_paths, quartiles))
+        tile_paths = [
+            p for p, _ in stratified_sample(
+                keyed, key_fn=lambda item: item[1],
+                fraction=sample_fraction, seed=seed,
+            )
+        ]
+
+    # Record the selected tile ids so tier2_sn6_sar can select the SAME
+    # tiles ("paired 1:1 with optical selection" — Tier 2 table).
+    selected_path = output_dir / "selected_tile_ids.json"
+    selected_path.write_text(json.dumps(sorted(p.stem for p in tile_paths)))
 
     total = len(tile_paths)
     if max_samples:
@@ -222,13 +239,23 @@ def run_tier1_sn6_opt(
 
         sample["gsd_bucket"] = native_bucket
 
-        ok, errs = validate_sample(sample)
-        if not ok:
-            print(f"  [VALID] {sample_id}: {errs}", file=sys.stderr)
+        # R4: dual-resolution branching (native + CARTOSAT-proxy).
+        rows = [sample, create_proxy_sample(sample)]
+
+        ok_all = True
+        for row in rows:
+            ok, errs = validate_sample(row)
+            if not ok:
+                print(f"  [VALID] {row['id']}: {errs}", file=sys.stderr)
+                ok_all = False
+                break
+        if not ok_all:
             stats["failed"] += 1
             continue
 
-        append_jsonl(sample, jsonl_path)
+        for row in rows:
+            append_jsonl(row, jsonl_path)
+
         manifest.mark_processed(
             sample_id=sample_id,
             dataset=_DATASET,

@@ -221,21 +221,36 @@ preprocess/
 
 ## 13. Handoff Checklist for MiMo
 
-- [x] Write `validator.py` with frozen JSONL schema (including `pair_type`, ordered `image_path`, `gsd_bucket` rule, `split`, `modality` enum with `"optical+sar"`) — 22 tests passing
-- [x] Write `common/stats.py` for two-pass global percentile computation (R2) — included in 60 test_common.py tests
-- [x] Write `common/sar.py` with R3 physics + R5 downsample — included in 60 test_common.py tests
-- [x] Write `common/bbox.py` with R6 Qwen format — included in 60 test_common.py tests
-- [x] Write `common/gsd.py` with bucket assignment rule + curriculum schedule — included in 60 test_common.py tests
+- [x] Write `validator.py` with frozen JSONL schema (including `pair_type`, ordered `image_path`, `gsd_bucket` rule, `split`, `modality` enum with `"optical+sar"`), plus the empty-bbox-on-grounding gap closed
+- [x] Write `common/stats.py` for two-pass global percentile computation (R2)
+- [x] Write `common/sar.py` with R3 physics + R5 downsample, plus `sar_intensity_pseudo_gray()` for genuinely single-pol sources (no fabricated second channel)
+- [x] Write `common/bbox.py` with R6 Qwen format
+- [x] Write `common/gsd.py` with bucket assignment rule + curriculum schedule. `DUAL_RESOLUTION_DATASETS` resolved to {vrsbench, rsvqa_hr, levir_cd, sn6_opt} — every Tier 1 row whose Treatment column says "R4", and only those
+- [x] Write `common/sample.py` — shared stratified_sample/quantile_bucket, used everywhere a Tier table cell says "stratified"
 - [x] Implement `common/io.py` (Manifest, write_png, append_jsonl, ShardWriter)
 - [x] Implement `common/concat.py` (R7 horizontal concatenation utility)
-- [x] Implement `tier1_oscd.py` — verified on real OSCD data (24 pairs → 48 PNGs + 24 JSONL lines), 21 tests passing
-- [x] Implement `tier1_vrsbench.py` — verified on real VRSBench data (100 samples → 200 JSONL lines), 27 tests passing
-- [ ] Write `split_internal_val.py` to carve 2–3% stratified `val_internal` from each tier's train
-- [ ] Implement remaining tier scripts: `tier0_bigen.py`, `tier1_rsvqa_hr.py`, `tier1_cdvqa.py`, `tier1_levir_cd.py`, `tier1_sn6_opt.py`, `tier2_sardet.py`, `tier2_sn6_sar.py`, `tier3_sen2lulc.py`
-- [ ] Implement `merge_and_package.py` (schema validation → tar shards → final JSONL)
-- [ ] Write Stage 1/2/3 training scripts with config-flag `use_dora`, checkpoint resume, 10% replay
-- [ ] Add 50-step DoRA vs QLoRA benchmark at Stage 1 entry
-- [x] Add post-download sanity checks for every dataset — 11 tests in test_sanity_check.py
-- [ ] CDVQA loader: asserts split filenames match `train`/`val` exactly; rejects any `test`/`test2` entries
+- [x] Implement `tier0_bigen.py` — real metadata.parquet + s2_npy/s1_npy loading (not a metadata-only stub); emits optical, +SAR, +cross-modal fusion rows per patch when S1 is present (Mandate 4)
+- [x] Implement `tier1_oscd.py`
+- [x] Implement `tier1_vrsbench.py`
+- [x] Implement `tier1_rsvqa_hr.py` — R4 wired (was imported, unused), non-PNG sources converted (R7)
+- [x] Implement `tier1_cdvqa.py`
+- [x] Implement `tier1_levir_cd.py` — R4 wired; real change-magnitude-decile stratified selection (was plain random.sample)
+- [x] Implement `tier1_sn6_opt.py` — R4 wired; real building-density-quartile stratified selection; bbox list and reported building count now agree; writes `selected_tile_ids.json` for SAR pairing
+- [x] Implement `tier2_sardet.py` — real class-uniform stratified selection; honest single-channel dB render (no fabricated VH = VV*0.8)
+- [x] Implement `tier2_sn6_sar.py` — uses the real `sar_pseudo_rgb`/`sar_intensity_pseudo_gray` physics (was reimplemented inline, bypassing R3 entirely); paired 1:1 with `tier1_sn6_opt.py`'s selection via `--optical-dir`, emitting cross-modal fusion rows
+- [x] Implement `tier3_sen2lulc.py` — `sample_fraction` now actually subsamples (was a dead parameter — risked processing all ~213k entries against the 20GB Kaggle output cap); real class-uniform stratification; fixed `" Masks"` typo; fixed CSV string labels ("2") not resolving to class names
+- [x] Implement `merge_and_package.py` — fixed the bug where it always skipped `_train.jsonl`/`_val_internal.jsonl` and re-read the pre-split original, silently dropping every val_internal row; sharded tarring via `ShardWriter` (≤2000 files/shard) instead of one monolithic tar.gz; duplicate ids are now actually dropped, not just reported
+- [x] Write `split_internal_val.py`
+- [x] Add post-download sanity checks for every dataset — now actually raise `SanityCheckError` on missing/empty structure instead of unconditionally reporting "pass"
+- [x] CDVQA loader: asserts split filenames match `train`/`val` exactly; rejects any `test`/`test2` entries
+- [x] Write Stage 1/2/3 training scripts with config-flag `use_dora`, checkpoint resume, 10% replay — **scaffolding only**, `train_step`/`validate` are marked stubs (NaN loss) and print a loud warning on `run()`; no real forward/backward pass is wired in
+- [x] Add DoRA vs QLoRA benchmark script — memory/speed are real measurements; loss comparison honestly reports `"unmeasured"` rather than the old fake identical-formula loss curve that always "picked a winner"
 
-**Test suite**: 130/130 tests passing across `test_validator.py`, `test_common.py`, `test_tier1_oscd.py`, `test_tier1_vrsbench.py`
+### Known deferred items (not silently left broken — flagged here)
+
+- `training/train.py` and `training/benchmark_dora.py` need a real ChatML-formatting + forward/backward pass wired against the actual Unsloth/Qwen3-VL API. That needs a live Kaggle GPU session to write and verify — don't trust either script's loss output until that lands.
+- OSCD/LEVIR-CD/SpaceNet6 mask→bbox conversion keeps only the overall bounding box of all connected components, not one box per separate change region, even though the schema supports multiple boxes per sample.
+- R4 proxy images (`create_proxy_sample`) relabel `gsd_bucket` but reuse the same source image for every dataset except VRSBench, which does a real bicubic downsample. Not pixel-accurate GSD simulation for rsvqa_hr/levir_cd/sn6_opt yet.
+- `tier0_bigen.py`'s input contract (`metadata.parquet` + `s2_npy/`/`s1_npy/`) is this script's own Kaggle-side format, not raw BigEarthNet-MM HDF5 — adjust `load_bigen_arrays()` if the real acquisition notebook's HF stream produces different field names.
+
+**Test suite**: 292/292 tests passing.

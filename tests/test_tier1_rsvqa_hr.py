@@ -5,9 +5,11 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import numpy as np
 import pytest
+from PIL import Image
 
-from preprocess.tier1_rsvqa_hr import load_annotations, parse_rsvqa_sample
+from preprocess.tier1_rsvqa_hr import load_annotations, parse_rsvqa_sample, run_tier1_rsvqa_hr
 
 
 class TestLoadAnnotations:
@@ -79,6 +81,71 @@ class TestParseRsvqaSample:
         result = parse_rsvqa_sample(entry, Path("/nonexistent"), "rsvqa_1")
         assert result is not None
         assert result["image_path"] == []
+
+    def test_jpg_source_converted_to_png(self, tmp_path):
+        """R7: all outputs must be PNG — a .jpg source must be converted,
+        not referenced directly."""
+        images_dir = tmp_path / "images"
+        images_dir.mkdir()
+        png_dir = tmp_path / "converted"
+        img = Image.fromarray(np.zeros((32, 32, 3), dtype=np.uint8))
+        img.save(str(images_dir / "img002.jpg"), format="JPEG")
+
+        entry = {"question_id": 2, "question": "What?", "answer": "field", "image_id": "img002"}
+        result = parse_rsvqa_sample(entry, images_dir, "rsvqa_2", png_dir=png_dir)
+        assert result is not None
+        assert result["image_path"][0].endswith(".png")
+        assert Path(result["image_path"][0]).exists()
+
+
+class TestRunTier1RsvqaHr:
+    def _make_input(self, root: Path, n: int = 4) -> None:
+        images_dir = root / "images"
+        images_dir.mkdir(parents=True)
+        entries = []
+        for i in range(n):
+            Image.fromarray(np.zeros((16, 16, 3), dtype=np.uint8)).save(
+                str(images_dir / f"img{i:03d}.png")
+            )
+            entries.append({
+                "question_id": i,
+                "question": "What is this?",
+                "answer": "building",
+                "image_id": f"img{i:03d}",
+            })
+        (root / "train.json").write_text(json.dumps(entries))
+
+    def test_r4_dual_resolution_doubles_rows(self, tmp_path):
+        """R4: RSVQA-HR is in DUAL_RESOLUTION_DATASETS — every sample
+        with an image must produce a native + CARTOSAT-proxy row."""
+        input_dir = tmp_path / "input"
+        self._make_input(input_dir)
+
+        output_dir = tmp_path / "output"
+        stats = run_tier1_rsvqa_hr(input_dir, output_dir)
+        assert stats["processed"] == 4
+
+        with open(output_dir / "rsvqa_hr.jsonl") as f:
+            lines = [json.loads(l) for l in f if l.strip()]
+
+        assert len(lines) == 8  # 4 samples x 2 (native + proxy)
+        buckets = [l["gsd_bucket"] for l in lines]
+        assert "[GSD:0.15m]" in buckets
+        assert any("CARTOSAT-proxy" in b for b in buckets)
+
+    def test_all_rows_validate(self, tmp_path):
+        input_dir = tmp_path / "input"
+        self._make_input(input_dir)
+        output_dir = tmp_path / "output"
+        run_tier1_rsvqa_hr(input_dir, output_dir)
+
+        from preprocess.validator import validate_sample
+        with open(output_dir / "rsvqa_hr.jsonl") as f:
+            for line in f:
+                if not line.strip():
+                    continue
+                ok, errs = validate_sample(json.loads(line))
+                assert ok, errs
 
 
 class TestRsvqaHrSchema:

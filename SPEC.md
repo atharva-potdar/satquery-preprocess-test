@@ -221,15 +221,21 @@ preprocess/
 
 ## 13. Handoff Checklist for MiMo
 
-- [ ] Write `validator.py` with frozen JSONL schema (including `pair_type`, ordered `image_path`, `gsd_bucket` rule, `split`, `modality` enum with `"optical+sar"`)
-- [ ] Write `common/stats.py` for two-pass global percentile computation (R2)
-- [ ] Write `common/sar.py` with R3 physics + R5 downsample
-- [ ] Write `common/bbox.py` with R6 Qwen format
-- [ ] Write `common/gsd.py` with bucket assignment rule + curriculum schedule
+- [x] Write `validator.py` with frozen JSONL schema (including `pair_type`, ordered `image_path`, `gsd_bucket` rule, `split`, `modality` enum with `"optical+sar"`) — 22 tests passing
+- [x] Write `common/stats.py` for two-pass global percentile computation (R2) — included in 60 test_common.py tests
+- [x] Write `common/sar.py` with R3 physics + R5 downsample — included in 60 test_common.py tests
+- [x] Write `common/bbox.py` with R6 Qwen format — included in 60 test_common.py tests
+- [x] Write `common/gsd.py` with bucket assignment rule + curriculum schedule — included in 60 test_common.py tests
+- [x] Implement `common/io.py` (Manifest, write_png, append_jsonl, ShardWriter)
+- [x] Implement `common/concat.py` (R7 horizontal concatenation utility)
+- [x] Implement `tier1_oscd.py` — verified on real OSCD data (24 pairs → 48 PNGs + 24 JSONL lines), 21 tests passing
+- [x] Implement `tier1_vrsbench.py` — verified on real VRSBench data (100 samples → 200 JSONL lines), 27 tests passing
 - [ ] Write `split_internal_val.py` to carve 2–3% stratified `val_internal` from each tier's train
-- [ ] Implement each tier script (idempotent, manifest-aware, writes to sharded `/kaggle/working/<tier>/`)
+- [ ] Implement remaining tier scripts: `tier0_bigen.py`, `tier1_rsvqa_hr.py`, `tier1_cdvqa.py`, `tier1_levir_cd.py`, `tier1_sn6_opt.py`, `tier2_sardet.py`, `tier2_sn6_sar.py`, `tier3_sen2lulc.py`
 - [ ] Implement `merge_and_package.py` (schema validation → tar shards → final JSONL)
 - [ ] Write Stage 1/2/3 training scripts with config-flag `use_dora`, checkpoint resume, 10% replay
 - [ ] Add 50-step DoRA vs QLoRA benchmark at Stage 1 entry
 - [ ] Add post-download sanity checks for every dataset
 - [ ] CDVQA loader: asserts split filenames match `train`/`val` exactly; rejects any `test`/`test2` entries
+
+**Test suite**: 130/130 tests passing across `test_validator.py`, `test_common.py`, `test_tier1_oscd.py`, `test_tier1_vrsbench.py`

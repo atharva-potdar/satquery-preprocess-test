@@ -1,0 +1,42 @@
+# Data directory - contains large datasets not suitable for git
+data/
+
+# Generated output directories
+data/*_output/
+data/*/output/
+
+# Extracted images (can be regenerated from zips)
+data/*/Images_train/
+data/*/Images_val/
+
+# Cached files
+data/.cache/
+data/tmp/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# Pytest cache
+.pytest_cache/
+
+# Virtual environment
+venv/
+env/
+.venv/
+.env/
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Temporary files
+*.tmp
+*.temp

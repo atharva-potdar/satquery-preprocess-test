@@ -1,0 +1,11 @@
+# SatQuery AI — Pinned Dependencies
+# Update versions deliberately; run `pip install -r requirements.txt` yourself.
+
+# --- Step 1: Validator + Tests ---
+jsonschema>=4.21,<5
+pytest>=8.0,<9
+
+# --- Step 2+: Preprocessing (common/ modules) ---
+rasterio>=1.3,<2
+numpy>=1.26,<2
+Pillow>=10.0,<11

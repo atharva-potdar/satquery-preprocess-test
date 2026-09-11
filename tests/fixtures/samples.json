@@ -1,0 +1,101 @@
+[
+  {
+    "id": "test_vqa_single_001",
+    "dataset": "rsvqa_hr",
+    "task": "vqa",
+    "image_path": ["tests/fixtures/dummy_rgb.png"],
+    "pair_type": "single",
+    "gsd_bucket": "[GSD:0.15m]",
+    "split": "train",
+    "instruction": "How many buildings are visible in this image?",
+    "response": "There are 3 buildings visible.",
+    "bbox": null,
+    "modality": "optical"
+  },
+  {
+    "id": "test_grounding_single_002",
+    "dataset": "vrsbench",
+    "task": "grounding",
+    "image_path": ["tests/fixtures/dummy_vhr.png"],
+    "pair_type": "single",
+    "gsd_bucket": "VHR-native",
+    "split": "train",
+    "instruction": "Highlight the water body in this image.",
+    "response": "The water body is located in the lower-right quadrant.",
+    "bbox": [[200, 600, 800, 950]],
+    "modality": "optical"
+  },
+  {
+    "id": "test_change_vqa_bitemp_003",
+    "dataset": "cdvqa",
+    "task": "change_vqa",
+    "image_path": [
+      "tests/fixtures/dummy_pre.png",
+      "tests/fixtures/dummy_post.png"
+    ],
+    "pair_type": "bitemporal",
+    "gsd_bucket": "[GSD:2m]",
+    "split": "train",
+    "instruction": "What changed between the two dates?",
+    "response": "A new building was constructed in the central area.",
+    "bbox": null,
+    "modality": "optical"
+  },
+  {
+    "id": "test_fusion_grounding_cross_004",
+    "dataset": "sn6_sar",
+    "task": "fusion_grounding",
+    "image_path": [
+      "tests/fixtures/dummy_optical.tif",
+      "tests/fixtures/dummy_sar.tif"
+    ],
+    "pair_type": "cross-modal",
+    "gsd_bucket": "[GSD:0.5m]",
+    "split": "train",
+    "instruction": "Use the optical and SAR images together to identify built-up regions.",
+    "response": "Built-up regions are highlighted in the urban core.",
+    "bbox": [[100, 150, 450, 600]],
+    "modality": "optical+sar"
+  },
+  {
+    "id": "test_invalid_missing_modality_005",
+    "dataset": "bigen",
+    "task": "vqa",
+    "image_path": ["tests/fixtures/dummy_bigen.png"],
+    "pair_type": "single",
+    "gsd_bucket": "[GSD:10m]",
+    "split": "train",
+    "instruction": "Describe the land cover.",
+    "response": "Forest and farmland.",
+    "bbox": null
+  },
+  {
+    "id": "test_invalid_bbox_overflow_006",
+    "dataset": "vrsbench",
+    "task": "grounding",
+    "image_path": ["tests/fixtures/dummy_vhr.png"],
+    "pair_type": "single",
+    "gsd_bucket": "VHR-native",
+    "split": "train",
+    "instruction": "Locate the bridge.",
+    "response": "The bridge spans the river.",
+    "bbox": [[0, 0, 1500, 500]],
+    "modality": "optical"
+  },
+  {
+    "id": "test_invalid_pair_image_mismatch_007",
+    "dataset": "cdvqa",
+    "task": "vqa",
+    "image_path": [
+      "tests/fixtures/dummy_pre.png",
+      "tests/fixtures/dummy_post.png"
+    ],
+    "pair_type": "single",
+    "gsd_bucket": "[GSD:2m]",
+    "split": "train",
+    "instruction": "Describe this image.",
+    "response": "A rural landscape.",
+    "bbox": null,
+    "modality": "optical"
+  }
+]

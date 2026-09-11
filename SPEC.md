@@ -235,7 +235,7 @@ preprocess/
 - [ ] Implement `merge_and_package.py` (schema validation → tar shards → final JSONL)
 - [ ] Write Stage 1/2/3 training scripts with config-flag `use_dora`, checkpoint resume, 10% replay
 - [ ] Add 50-step DoRA vs QLoRA benchmark at Stage 1 entry
-- [ ] Add post-download sanity checks for every dataset
+- [x] Add post-download sanity checks for every dataset — 11 tests in test_sanity_check.py
 - [ ] CDVQA loader: asserts split filenames match `train`/`val` exactly; rejects any `test`/`test2` entries
 
 **Test suite**: 130/130 tests passing across `test_validator.py`, `test_common.py`, `test_tier1_oscd.py`, `test_tier1_vrsbench.py`

@@ -1,0 +1,38 @@
+# SatQuery Training Stage 1 — Domain Adaptation
+# Focus: BigEarthNet (Sentinel-2 + Sentinel-1)
+# Output: stage1_adapter.pt
+
+model:
+  name: "unsloth/Qwen3-VL-8B-Instruct-unsloth-bnb-4bit"
+  use_dora: true  # Set false for QLoRA fallback
+
+training:
+  stage: 1
+  epochs: 1.5
+  batch_size: 2
+  gradient_accumulation_steps: 4  # Effective batch = 8
+  learning_rate: 2e-4
+  lr_scheduler: "cosine"
+  warmup_ratio: 0.05
+  max_steps: 14000
+  weight_decay: 0.01
+
+data:
+  jsonl_dir: "data/bigen_output"
+  val_jsonl: "data/bigen_output/bigen_val_internal.jsonl"
+  replay_fraction: 0.0  # No replay for stage 1
+  max_samples: null  # Use all
+
+curriculum:
+  native_proxy_ratio: [1.0, 0.0]  # Stage 1: all native
+
+checkpoint:
+  save_every: 2000
+  output_dir: "checkpoints/stage1"
+  resume_from: null
+
+logging:
+  eval_every: 500
+  log_every: 50
+  wandb_project: "satquery"
+  wandb_run_name: "stage1_domain_adapt"
